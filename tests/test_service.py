@@ -4,7 +4,9 @@ from instrument_registry.collector.athex import AthexStock
 from instrument_registry.collector.gleif import GleifEntity
 from instrument_registry.db.session import connect
 from instrument_registry.service import (
+    add_alias,
     fuzzy_match_title,
+    fuzzy_match_title_scored,
     lookup_by_isin,
     lookup_by_lei,
     refresh_athex,
@@ -73,6 +75,38 @@ def test_fuzzy_match_title_ranks_by_similarity(tmp_path):
     matches = fuzzy_match_title("NATIONAL BANK OF GREECE", threshold=0.6, db_path=db_path)
 
     assert [m.isin for m in matches] == ["GRS003003035"]
+
+
+def test_fuzzy_match_title_scored_reflects_the_candidate_that_actually_matched(tmp_path):
+    # NATIONAL BANK OF GREECE S.A. is a poor match for ATHEX's own name
+    # ("NAT. BANK OF GREECE SA") but a near-exact match for the linked
+    # entity's alt name — the returned ratio must reflect that, not the
+    # (much lower) ratio against instrument.name alone. A caller
+    # recomputing its own ratio against only instrument.name would get a
+    # wrong, misleadingly low number (a real bug found live 2026-07-19).
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(
+        db_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA", lei="5UMCZOEYKCVFAW8ZLO05"
+    )
+    _seed_entity(
+        db_path,
+        lei="5UMCZOEYKCVFAW8ZLO05",
+        legal_name="ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ Α.Ε.",
+    )
+    connection = connect(db_path)
+    connection.execute(
+        "UPDATE entities SET other_names = ? WHERE lei = ?",
+        ('["NATIONAL BANK OF GREECE S.A."]', "5UMCZOEYKCVFAW8ZLO05"),
+    )
+    connection.commit()
+    connection.close()
+
+    matches = fuzzy_match_title_scored("NATIONAL BANK OF GREECE S.A.", threshold=0.6, db_path=db_path)
+
+    assert len(matches) == 1
+    ratio, instrument = matches[0]
+    assert instrument.isin == "GRS003003035"
+    assert ratio > 0.95
 
 
 def test_fuzzy_match_title_falls_back_to_the_linked_entitys_greek_name(tmp_path):
@@ -155,6 +189,64 @@ def test_refresh_gleif_links_pending_instruments_and_stores_the_entity(tmp_path,
     entity = lookup_by_lei("5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
     assert entity.legal_name == "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ Α.Ε."
     assert "NATIONAL BANK OF GREECE S.A." in entity.other_names
+
+
+def test_fuzzy_match_title_matches_an_exact_learned_alias(tmp_path):
+    # "MIG HOLDINGS SA" is nothing like ATHEX's own name for the instrument
+    # below (ratio would be well under any reasonable threshold), but a
+    # consuming project (pothen_eshes) has already confirmed via human
+    # review that it's the same company — once harvested as an alias, it
+    # must resolve immediately and exactly, not need refuzzy-matching.
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="ΑΝΩΝΥΜΟΣ ΕΤΑΙΡΕΙΑ ΣΥΜΜΕΤΟΧΩΝ")
+    add_alias(
+        "GRS332003008", "MIG HOLDINGS SA",
+        source="pothen_eshes.title_review:cluster_id=366", db_path=db_path,
+    )
+
+    matches = fuzzy_match_title_scored("MIG HOLDINGS SA", threshold=0.9, db_path=db_path)
+
+    assert len(matches) == 1
+    ratio, instrument = matches[0]
+    assert instrument.isin == "GRS332003008"
+    assert ratio == 1.0
+
+
+def test_add_alias_upserts_rather_than_duplicates(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+
+    add_alias("GRS332003008", "ALIAS ONE", source="first-pass", db_path=db_path)
+    add_alias("GRS332003008", "ALIAS ONE", source="second-pass", db_path=db_path)
+
+    connection = connect(db_path)
+    rows = connection.execute(
+        "SELECT alias_text, source FROM instrument_aliases WHERE isin = ?", ("GRS332003008",)
+    ).fetchall()
+    connection.close()
+
+    assert len(rows) == 1
+    assert rows[0]["source"] == "second-pass"
+
+
+def test_refresh_athex_never_touches_learned_aliases(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA")
+    add_alias("GRS003003035", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ", source="pothen_eshes", db_path=db_path)
+
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_stocks",
+        lambda: [
+            AthexStock(
+                isin="GRS003003035", symbol="ETE", issuer="NAT. BANK OF GREECE SA",
+                issuer_full_name="NATIONAL BANK OF GREECE S.A.", market="SECURITIES MARKET",
+            )
+        ],
+    )
+    refresh_athex(db_path=db_path)
+
+    matches = fuzzy_match_title_scored("ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ", threshold=0.9, db_path=db_path)
+    assert [m.isin for _, m in matches] == ["GRS003003035"]
 
 
 def test_refresh_gleif_leaves_isin_unlinked_when_no_entity_found(tmp_path, monkeypatch):

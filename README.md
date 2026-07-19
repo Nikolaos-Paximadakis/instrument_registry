@@ -45,6 +45,19 @@ stocks/entities).
 - `lookup_by_isin(isin, db_path=None) -> Instrument | None`
 - `lookup_by_lei(lei, db_path=None) -> Entity | None`
 - `fuzzy_match_title(title, instrument_type=None, threshold=0.75, db_path=None) -> list[Instrument]`
+- `fuzzy_match_title_scored(title, instrument_type=None, threshold=0.75, db_path=None) -> list[tuple[float, Instrument]]`
+  — same matching, also returns each match's actual best ratio.
+- `add_alias(isin, alias_text, source, confidence=None, db_path=None) -> None` — records a
+  locally-learned alternate spelling of an instrument (e.g. a consuming
+  project's own confirmed human/AI title-merge decision). Stored
+  separately from `instruments`/`entities` (`refresh_athex()`/
+  `refresh_gleif()` never touch it, so a refresh can't wipe a learned
+  alias) and consulted by both `fuzzy_match_title*()` functions as an
+  extra candidate string per instrument — an exact alias hit naturally
+  scores ratio 1.0. The payoff: once a consuming project has reconciled
+  two spelling variants as the same instrument, a *future* occurrence of
+  that exact string resolves immediately, without needing to re-run
+  fuzzy-matching/LLM review to rediscover the same match again.
 
 ## Installation
 
@@ -112,3 +125,23 @@ confirm the collectors still work against them.
   same session (2026-07-19) after a live smoke test showed a Greek-script
   query for National Bank of Greece matching nothing, since ATHEX's own
   data never has a Greek name.
+- **Known GLEIF data-quality issue (found live 2026-07-19, worked around
+  locally):** GLEIF's own `filter[isin]=...` API currently returns
+  Piraeus Bank's LEI (`213800OYHR1MPQ5VJL60`) for ISIN `GRK014011008`
+  (ATHEX-listed as `MERMEREN KOMBINAT A.D. PRILEP`, an unrelated North
+  Macedonian company) — confirmed this isn't a bug in `collector/
+  gleif.py` (it correctly reflects records[0] from GLEIF's response, and
+  a raw live query returns exactly one record, the wrong one). Piraeus
+  Bank's own correct ATHEX entry (`GRS831003009`) is separately, and
+  correctly, linked to the same LEI, so this is a genuine duplicate/wrong
+  linkage on GLEIF's end, not this package's. Found by a consumer
+  (`pothen_eshes`) auditing its own confirmed title merges against this
+  package's data — several unrelated Greek bank-related titles were
+  scoring falsely high against Mermeren Kombinat's (wrongly) Piraeus-Bank
+  entity names. Corrected locally by nulling `instruments.lei` for that
+  one ISIN; **note this will silently recur** on a future `refresh_gleif()`
+  run (it only re-queries instruments with `lei IS NULL`, and GLEIF's
+  live data hasn't changed) unless GLEIF's own registry is fixed
+  upstream or this package grows a way to blacklist a known-bad
+  ISIN→LEI link — not built, since one confirmed bad case wasn't enough
+  to justify the added mechanism yet.

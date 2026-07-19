@@ -125,6 +125,40 @@ def refresh_gleif(*, db_path: str | Path | None = None) -> int:
     return linked
 
 
+def add_alias(
+    isin: str,
+    alias_text: str,
+    *,
+    source: str,
+    confidence: float | None = None,
+    db_path: str | Path | None = None,
+) -> None:
+    """Records `alias_text` as a known alternate spelling of `isin`, learned
+    outside ATHEX/GLEIF (e.g. a consuming project's own confirmed human/AI
+    title-merge decision) — `source` should identify where it came from
+    (e.g. "pothen_eshes.title_review:cluster_id=366"). Upserts on
+    (isin, alias_text), so re-harvesting the same decision refreshes rather
+    than duplicates. Silently a no-op for an unknown isin (FK constraint —
+    callers are expected to have already resolved the isin via a match)."""
+    now = datetime.now(UTC).isoformat()
+    connection = connect(db_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO instrument_aliases (isin, alias_text, source, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(isin, alias_text) DO UPDATE SET
+                source = excluded.source,
+                confidence = excluded.confidence,
+                created_at = excluded.created_at
+            """,
+            (isin, alias_text, source, confidence, now),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def lookup_by_isin(isin: str, *, db_path: str | Path | None = None) -> Instrument | None:
     connection = connect(db_path)
     try:
@@ -165,7 +199,28 @@ def fuzzy_match_title(
     carries the Greek legal name (e.g. "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ Α.Ε."
     for National Bank of Greece), and pothen_eshes titles are frequently
     Greek-script.
+
+    See `fuzzy_match_title_scored()` for a variant that also returns each
+    match's ratio — a caller recomputing its own ratio against only
+    `instrument.name` would get a wrong (too-low) number for any match
+    that actually came from `other_names` or the linked entity's names.
     """
+    return [instrument for _, instrument in fuzzy_match_title_scored(
+        title, instrument_type=instrument_type, threshold=threshold, db_path=db_path)]
+
+
+def fuzzy_match_title_scored(
+    title: str,
+    *,
+    instrument_type: str | None = None,
+    threshold: float = 0.75,
+    db_path: str | Path | None = None,
+) -> list[tuple[float, Instrument]]:
+    """Same matching as `fuzzy_match_title()`, but also returns each
+    match's actual best ratio (against whichever candidate string —
+    name, other_names, a linked entity's names, or a learned alias —
+    produced it), for a caller that wants to judge or display match
+    confidence rather than just take the ranked list."""
     connection = connect(db_path)
     try:
         if instrument_type is not None:
@@ -188,6 +243,9 @@ def fuzzy_match_title(
                 LEFT JOIN entities ON entities.lei = instruments.lei
                 """
             ).fetchall()
+        aliases_by_isin: dict[str, list[str]] = {}
+        for alias_row in connection.execute("SELECT isin, alias_text FROM instrument_aliases").fetchall():
+            aliases_by_isin.setdefault(alias_row["isin"], []).append(alias_row["alias_text"])
     finally:
         connection.close()
 
@@ -195,7 +253,7 @@ def fuzzy_match_title(
     scored: list[tuple[float, Instrument]] = []
     for row in rows:
         instrument = _row_to_instrument(row)
-        candidates = [instrument.name, *instrument.other_names]
+        candidates = [instrument.name, *instrument.other_names, *aliases_by_isin.get(instrument.isin, [])]
         if row["entity_legal_name"] is not None:
             candidates.append(row["entity_legal_name"])
         if row["entity_other_names"]:
@@ -208,7 +266,7 @@ def fuzzy_match_title(
             scored.append((best_ratio, instrument))
 
     scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [instrument for _, instrument in scored]
+    return scored
 
 
 def _row_to_instrument(row) -> Instrument:

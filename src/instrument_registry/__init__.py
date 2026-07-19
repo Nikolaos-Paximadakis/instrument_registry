@@ -1,7 +1,9 @@
 from instrument_registry.service import (
     Entity,
     Instrument,
+    add_alias,
     fuzzy_match_title,
+    fuzzy_match_title_scored,
     lookup_by_isin,
     lookup_by_lei,
     refresh_athex,
@@ -11,7 +13,9 @@ from instrument_registry.service import (
 __all__ = [
     "Entity",
     "Instrument",
+    "add_alias",
     "fuzzy_match_title",
+    "fuzzy_match_title_scored",
     "lookup_by_isin",
     "lookup_by_lei",
     "refresh_athex",
