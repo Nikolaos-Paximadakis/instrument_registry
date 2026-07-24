@@ -182,9 +182,10 @@ def test_refresh_gleif_links_pending_instruments_and_stores_the_entity(tmp_path,
         ),
     )
 
-    linked = refresh_gleif(db_path=db_path)
+    result = refresh_gleif(db_path=db_path)
 
-    assert linked == 1
+    assert result.linked == 1
+    assert result.skipped_blacklisted == 0
     instrument = lookup_by_isin("GRS003003035", db_path=db_path)
     assert instrument.lei == "5UMCZOEYKCVFAW8ZLO05"
     entity = lookup_by_lei("5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
@@ -227,9 +228,12 @@ def test_refresh_gleif_does_not_relink_a_blacklisted_pair(tmp_path, monkeypatch)
         ),
     )
 
-    linked = refresh_gleif(db_path=db_path)
+    result = refresh_gleif(db_path=db_path)
 
-    assert linked == 0
+    assert result.linked == 0
+    # The whole point of the count: this run is distinguishable from one
+    # that simply found no LEI at all.
+    assert result.skipped_blacklisted == 1
     assert lookup_by_isin("GRK014011008", db_path=db_path).lei is None
     # The bogus entity row isn't created on the blacklisted pair's behalf either.
     assert lookup_by_lei("213800OYHR1MPQ5VJL60", db_path=db_path) is None
@@ -253,9 +257,10 @@ def test_refresh_gleif_still_links_a_different_lei_for_a_blacklisted_isin(tmp_pa
         ),
     )
 
-    linked = refresh_gleif(db_path=db_path)
+    result = refresh_gleif(db_path=db_path)
 
-    assert linked == 1
+    assert result.linked == 1
+    assert result.skipped_blacklisted == 0
     assert lookup_by_isin("GRK014011008", db_path=db_path).lei == "529900W18LQJJN6SJ336"
 
 
@@ -325,7 +330,9 @@ def test_refresh_gleif_leaves_isin_unlinked_when_no_entity_found(tmp_path, monke
         "instrument_registry.service.lookup_lei_by_isin", lambda isin: None
     )
 
-    linked = refresh_gleif(db_path=db_path)
+    result = refresh_gleif(db_path=db_path)
 
-    assert linked == 0
+    assert result.linked == 0
+    # Contrast with the blacklist case: same linked count, different reason.
+    assert result.skipped_blacklisted == 0
     assert lookup_by_isin("GRS999999999", db_path=db_path).lei is None

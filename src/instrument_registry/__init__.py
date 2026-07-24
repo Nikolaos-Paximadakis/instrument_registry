@@ -1,5 +1,6 @@
 from instrument_registry.service import (
     Entity,
+    GleifRefreshResult,
     Instrument,
     add_alias,
     blacklist_lei,
@@ -13,6 +14,7 @@ from instrument_registry.service import (
 
 __all__ = [
     "Entity",
+    "GleifRefreshResult",
     "Instrument",
     "add_alias",
     "blacklist_lei",

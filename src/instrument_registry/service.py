@@ -38,6 +38,15 @@ class Entity:
     source: str
 
 
+@dataclass(frozen=True, slots=True)
+class GleifRefreshResult:
+    """What a `refresh_gleif()` run did. `linked` alone can't distinguish a
+    run that found nothing from one that suppressed a known-bad link, which
+    is exactly the case worth noticing."""
+    linked: int
+    skipped_blacklisted: int
+
+
 def refresh_athex(*, db_path: str | Path | None = None) -> int:
     """Fetch ATHEX's current listed-stocks list and upsert into
     `instruments`. Safe to re-run: an existing row's `lei`/`cfi_code`/
@@ -74,11 +83,12 @@ def refresh_athex(*, db_path: str | Path | None = None) -> int:
     return len(stocks)
 
 
-def refresh_gleif(*, db_path: str | Path | None = None) -> int:
+def refresh_gleif(*, db_path: str | Path | None = None) -> GleifRefreshResult:
     """For every cached instrument missing a `lei`, look it up by ISIN
-    against GLEIF's live API and link it. Returns how many instruments
-    were newly linked (an ISIN with no registered LEI, common for
-    smaller/older Greek issuers, is left NULL and retried next run).
+    against GLEIF's live API and link it. Returns a `GleifRefreshResult`
+    counting instruments newly linked (an ISIN with no registered LEI,
+    common for smaller/older Greek issuers, is left NULL and retried next
+    run) and pairs suppressed as blacklisted.
 
     Any (isin, lei) pair recorded via `blacklist_lei()` is looked up but
     not written — the ISIN is left NULL and neither the link nor the
@@ -90,6 +100,7 @@ def refresh_gleif(*, db_path: str | Path | None = None) -> int:
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
     linked = 0
+    skipped_blacklisted = 0
     try:
         pending_isins = [
             row["isin"]
@@ -106,6 +117,7 @@ def refresh_gleif(*, db_path: str | Path | None = None) -> int:
             if entity is None:
                 continue
             if (isin, entity.lei) in blacklisted:
+                skipped_blacklisted += 1
                 continue
             connection.execute(
                 """
@@ -136,7 +148,7 @@ def refresh_gleif(*, db_path: str | Path | None = None) -> int:
         connection.commit()
     finally:
         connection.close()
-    return linked
+    return GleifRefreshResult(linked=linked, skipped_blacklisted=skipped_blacklisted)
 
 
 def add_alias(

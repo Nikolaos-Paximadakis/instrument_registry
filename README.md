@@ -42,8 +42,12 @@ stocks/entities).
 
 - `refresh_athex(db_path=None) -> int` — fetch + upsert ATHEX's current
   stock list. Safe to re-run.
-- `refresh_gleif(db_path=None) -> int` — look up and link the LEI for any
-  cached instrument that doesn't have one yet.
+- `refresh_gleif(db_path=None) -> GleifRefreshResult` — look up and link the
+  LEI for any cached instrument that doesn't have one yet. Returns
+  `.linked` and `.skipped_blacklisted`; the second exists because `linked`
+  alone can't tell a run that found no LEI from one that suppressed a
+  known-bad link (see `blacklist_lei()`), and those want different
+  reactions. The CLI prints the skipped line only when it's non-zero.
 - `lookup_by_isin(isin, db_path=None) -> Instrument | None`
 - `lookup_by_lei(lei, db_path=None) -> Entity | None`
 - `fuzzy_match_title(title, instrument_type=None, threshold=0.75, db_path=None) -> list[Instrument]`
