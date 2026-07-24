@@ -55,6 +55,22 @@ CREATE TABLE IF NOT EXISTS instrument_aliases (
 );
 
 CREATE INDEX IF NOT EXISTS idx_instrument_aliases_isin ON instrument_aliases(isin);
+
+-- ISIN→LEI links that GLEIF's own API reports but that are known to be wrong.
+-- refresh_gleif() consults this before writing a link, so a bad linkage stays
+-- corrected instead of silently reappearing on the next run (it only re-queries
+-- instruments with `lei IS NULL`, so a hand-nulled row is exactly the row it
+-- retries). Same reasoning as instrument_aliases: local knowledge that the
+-- upstream source doesn't have, kept in its own table so a refresh can't wipe
+-- it. Keyed on the pair, not the ISIN alone — if GLEIF later returns a
+-- *different*, correct LEI for that ISIN, it still links normally.
+CREATE TABLE IF NOT EXISTS lei_blacklist (
+    isin       TEXT NOT NULL,
+    lei        TEXT NOT NULL,
+    reason     TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (isin, lei)
+);
 """
 
 

@@ -78,7 +78,15 @@ def refresh_gleif(*, db_path: str | Path | None = None) -> int:
     """For every cached instrument missing a `lei`, look it up by ISIN
     against GLEIF's live API and link it. Returns how many instruments
     were newly linked (an ISIN with no registered LEI, common for
-    smaller/older Greek issuers, is left NULL and retried next run)."""
+    smaller/older Greek issuers, is left NULL and retried next run).
+
+    Any (isin, lei) pair recorded via `blacklist_lei()` is looked up but
+    not written — the ISIN is left NULL and neither the link nor the
+    entity row is created. The lookup still happens because the pair, not
+    the ISIN, is what's blacklisted: if GLEIF later returns a different,
+    correct LEI for that ISIN, it links normally. That costs one wasted
+    request per blacklisted ISIN per run, which is the price of picking
+    up an upstream fix automatically."""
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
     linked = 0
@@ -89,9 +97,15 @@ def refresh_gleif(*, db_path: str | Path | None = None) -> int:
                 "SELECT isin FROM instruments WHERE lei IS NULL"
             ).fetchall()
         ]
+        blacklisted = {
+            (row["isin"], row["lei"])
+            for row in connection.execute("SELECT isin, lei FROM lei_blacklist").fetchall()
+        }
         for isin in pending_isins:
             entity = lookup_lei_by_isin(isin)
             if entity is None:
+                continue
+            if (isin, entity.lei) in blacklisted:
                 continue
             connection.execute(
                 """
@@ -153,6 +167,44 @@ def add_alias(
                 created_at = excluded.created_at
             """,
             (isin, alias_text, source, confidence, now),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def blacklist_lei(
+    isin: str,
+    lei: str,
+    *,
+    reason: str | None = None,
+    db_path: str | Path | None = None,
+) -> None:
+    """Records that GLEIF's `isin`→`lei` link is known-wrong, so
+    `refresh_gleif()` stops re-applying it, and clears the link if it's
+    already been written. `reason` should say how it was established
+    (e.g. "GLEIF returns Piraeus Bank's LEI for Mermeren Kombinat's
+    ISIN; confirmed against a raw live query 2026-07-19").
+
+    Only the instrument's own link is cleared — the entity row is left
+    alone, since a wrongly-linked LEI is usually a perfectly real entity
+    that other instruments legitimately point at."""
+    now = datetime.now(UTC).isoformat()
+    connection = connect(db_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO lei_blacklist (isin, lei, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(isin, lei) DO UPDATE SET
+                reason = excluded.reason,
+                created_at = excluded.created_at
+            """,
+            (isin, lei, reason, now),
+        )
+        connection.execute(
+            "UPDATE instruments SET lei = NULL, updated_at = ? WHERE isin = ? AND lei = ?",
+            (now, isin, lei),
         )
         connection.commit()
     finally:

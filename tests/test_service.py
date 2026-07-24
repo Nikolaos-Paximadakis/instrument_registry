@@ -5,6 +5,7 @@ from instrument_registry.collector.gleif import GleifEntity
 from instrument_registry.db.session import connect
 from instrument_registry.service import (
     add_alias,
+    blacklist_lei,
     fuzzy_match_title,
     fuzzy_match_title_scored,
     lookup_by_isin,
@@ -189,6 +190,73 @@ def test_refresh_gleif_links_pending_instruments_and_stores_the_entity(tmp_path,
     entity = lookup_by_lei("5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
     assert entity.legal_name == "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ Α.Ε."
     assert "NATIONAL BANK OF GREECE S.A." in entity.other_names
+
+
+def test_blacklist_lei_clears_an_already_written_bad_link(tmp_path):
+    # The real case this exists for: GLEIF's API reports Piraeus Bank's LEI
+    # for Mermeren Kombinat's ISIN, and the link had already been written.
+    db_path = tmp_path / "registry.db"
+    _seed_entity(db_path, lei="213800OYHR1MPQ5VJL60", legal_name="PIRAEUS BANK S.A.")
+    _seed_instrument(
+        db_path,
+        isin="GRK014011008",
+        name="MERMEREN KOMBINAT A.D. PRILEP",
+        lei="213800OYHR1MPQ5VJL60",
+    )
+
+    blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", reason="wrong upstream", db_path=db_path)
+
+    assert lookup_by_isin("GRK014011008", db_path=db_path).lei is None
+    # The entity itself is a real one other instruments legitimately use.
+    assert lookup_by_lei("213800OYHR1MPQ5VJL60", db_path=db_path) is not None
+
+
+def test_refresh_gleif_does_not_relink_a_blacklisted_pair(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRK014011008", name="MERMEREN KOMBINAT A.D. PRILEP")
+    blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+
+    monkeypatch.setattr(
+        "instrument_registry.service.lookup_lei_by_isin",
+        lambda isin: GleifEntity(
+            lei="213800OYHR1MPQ5VJL60",
+            legal_name="PIRAEUS BANK S.A.",
+            other_names=[],
+            country="GR",
+            status="ACTIVE",
+        ),
+    )
+
+    linked = refresh_gleif(db_path=db_path)
+
+    assert linked == 0
+    assert lookup_by_isin("GRK014011008", db_path=db_path).lei is None
+    # The bogus entity row isn't created on the blacklisted pair's behalf either.
+    assert lookup_by_lei("213800OYHR1MPQ5VJL60", db_path=db_path) is None
+
+
+def test_refresh_gleif_still_links_a_different_lei_for_a_blacklisted_isin(tmp_path, monkeypatch):
+    # Blacklisting is keyed on the pair, so an upstream fix that returns the
+    # correct LEI for the same ISIN must link normally.
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRK014011008", name="MERMEREN KOMBINAT A.D. PRILEP")
+    blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+
+    monkeypatch.setattr(
+        "instrument_registry.service.lookup_lei_by_isin",
+        lambda isin: GleifEntity(
+            lei="529900W18LQJJN6SJ336",
+            legal_name="MERMEREN KOMBINAT AD PRILEP",
+            other_names=[],
+            country="MK",
+            status="ACTIVE",
+        ),
+    )
+
+    linked = refresh_gleif(db_path=db_path)
+
+    assert linked == 1
+    assert lookup_by_isin("GRK014011008", db_path=db_path).lei == "529900W18LQJJN6SJ336"
 
 
 def test_fuzzy_match_title_matches_an_exact_learned_alias(tmp_path):

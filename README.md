@@ -32,7 +32,9 @@ stocks/entities).
 - Fetching ATHEX's current listed-stocks list (ISIN, symbol, issuer name)
 - Looking up the LEI/legal entity behind an instrument's ISIN, via GLEIF's
   free live API
-- Local SQLite cache of both (`entities` + `instruments`)
+- Local SQLite cache of both (`entities` + `instruments`), plus local
+  knowledge the upstream sources don't have (`instrument_aliases`,
+  `lei_blacklist`)
 - Fuzzy title matching against the cached reference data (advisory only —
   ranks candidates, decides nothing)
 
@@ -47,6 +49,16 @@ stocks/entities).
 - `fuzzy_match_title(title, instrument_type=None, threshold=0.75, db_path=None) -> list[Instrument]`
 - `fuzzy_match_title_scored(title, instrument_type=None, threshold=0.75, db_path=None) -> list[tuple[float, Instrument]]`
   — same matching, also returns each match's actual best ratio.
+- `blacklist_lei(isin, lei, reason=None, db_path=None) -> None` — records that
+  GLEIF's `isin`→`lei` link is known-wrong, and clears it if already
+  written. `refresh_gleif()` then looks the ISIN up but won't re-apply
+  that pair, so a hand-corrected linkage stays corrected instead of
+  silently reappearing (it re-queries exactly the rows with `lei IS
+  NULL`, i.e. the ones you just nulled). Keyed on the pair, not the ISIN
+  — if GLEIF later returns a *different*, correct LEI for that ISIN, it
+  links normally. Stored in its own `lei_blacklist` table, same
+  can't-be-wiped-by-a-refresh reasoning as aliases. See the known GLEIF
+  data-quality note at the bottom for the case that motivated it.
 - `add_alias(isin, alias_text, source, confidence=None, db_path=None) -> None` — records a
   locally-learned alternate spelling of an instrument (e.g. a consuming
   project's own confirmed human/AI title-merge decision). Stored
@@ -150,3 +162,9 @@ confirm the collectors still work against them.
   upstream or this package grows a way to blacklist a known-bad
   ISIN→LEI link — not built, since one confirmed bad case wasn't enough
   to justify the added mechanism yet.
+  **It did recur, exactly as predicted, on a `refresh_gleif()` run
+  2026-07-24** — that run's entire output was "linked 1 instruments", and
+  the 1 was this. A second occurrence was enough to justify the
+  mechanism, so `blacklist_lei()` (above) now exists and this pair is
+  recorded in it; a live `refresh_gleif()` on 2026-07-24 confirmed the
+  link no longer comes back.
