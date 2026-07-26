@@ -129,7 +129,11 @@ uv run pytest
 
 Most tests run against small hand-seeded SQLite fixtures. A separate,
 explicitly-run live test actually hits the real ATHEX/GLEIF sources to
-confirm the collectors still work against them.
+confirm the collectors still work against them:
+
+```bash
+INSTRUMENT_REGISTRY_LIVE_TESTS=1 uv run pytest
+```
 
 ## Notes
 
