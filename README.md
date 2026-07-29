@@ -51,8 +51,12 @@ stocks/entities).
 - `lookup_by_isin(isin, db_path=None) -> Instrument | None`
 - `lookup_by_lei(lei, db_path=None) -> Entity | None`
 - `fuzzy_match_title(title, instrument_type=None, threshold=0.75, db_path=None) -> list[Instrument]`
-- `fuzzy_match_title_scored(title, instrument_type=None, threshold=0.75, db_path=None) -> list[tuple[float, Instrument]]`
-  — same matching, also returns each match's actual best ratio.
+- `fuzzy_match_title_scored(title, instrument_type=None, threshold=0.75, db_path=None) -> list[tuple[float, str, Instrument]]`
+  — same matching, also returns each match's actual best ratio and *which
+  candidate string* (name, `other_names`, a linked entity's name, or a
+  learned alias) produced it — a caller showing the reviewer that string,
+  not just the ratio, makes a boilerplate-driven false positive visible
+  at a glance instead of an unexplained confidence percentage.
 - `blacklist_lei(isin, lei, reason=None, db_path=None) -> None` — records that
   GLEIF's `isin`→`lei` link is known-wrong, and clears it if already
   written. `refresh_gleif()` then looks the ISIN up but won't re-apply
@@ -74,6 +78,22 @@ stocks/entities).
   two spelling variants as the same instrument, a *future* occurrence of
   that exact string resolves immediately, without needing to re-run
   fuzzy-matching/LLM review to rediscover the same match again.
+- `exclude_title_match(isin, title_text, reason=None, db_path=None) -> None`
+  — the inverse of `add_alias()`: records that `title_text` must never
+  fuzzy-match `isin` again, even if its computed ratio would otherwise
+  clear a caller's threshold. Exists because generic corporate-
+  boilerplate overlap (e.g. a shared "ΣΥΜΜΕΤΟΧΩΝ Α.Ε."/"Holding S.A."
+  suffix) can produce a plausible-looking ratio between two genuinely
+  unrelated companies — confirmed live: "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε." scored
+  73% against the unrelated "ADMIE (IPTO) HOLDING S.A.", ahead of its
+  real match, "QUEST HOLDINGS S.A.", at 72%. Stored in its own
+  `title_isin_exclusions` table (same can't-be-wiped-by-a-refresh
+  reasoning as aliases/the blacklist) and consulted by both
+  `fuzzy_match_title*()` functions, which drop an excluded `(title,
+  isin)` pair from the candidate list entirely before ranking — not just
+  scored low — so the confirmed-wrong candidate can't keep outranking
+  the real one. `title_text` is stored normalized (stripped + casefolded)
+  to match how matching itself normalizes before comparing.
 
 ## Installation
 
@@ -176,3 +196,19 @@ INSTRUMENT_REGISTRY_LIVE_TESTS=1 uv run pytest
   mechanism, so `blacklist_lei()` (above) now exists and this pair is
   recorded in it; a live `refresh_gleif()` on 2026-07-24 confirmed the
   link no longer comes back.
+- **Known fuzzy-matching false positive (found live 2026-07-29, fixed via
+  `exclude_title_match()`):** "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε." (Quest Holdings)
+  scored 73% against the unrelated "ADMIE (IPTO) HOLDING S.A.", ahead of
+  its real match, "QUEST HOLDINGS S.A.", at 72% — both wrong candidates
+  share the generic "ΣΥΜΜΕΤΟΧΩΝ Α.Ε." ("Holding Company S.A.") suffix,
+  which `SequenceMatcher`'s whole-string ratio can't tell apart from a
+  genuine name match. Unlike the GLEIF case above, this isn't bad
+  upstream data — the string similarity really is that high — so the fix
+  is a title-level exclusion, not a blacklisted ISIN→LEI pair.
+  `exclude_title_match()` (consumer-facing: `pothen_eshes`'s
+  `/securities/top-titles/isin-duplicates` review page, "not a match —
+  exclude" button next to a listed candidate) drops the excluded `(title,
+  isin)` pair from the ranking outright, letting the real candidate take
+  its place. Live-verified the same session: after excluding, a fresh
+  `fuzzy_match_title_scored("QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε")` call no longer lists
+  ADMIE at all, and correctly ranks QUEST HOLDINGS S.A. first.

@@ -6,6 +6,7 @@ from instrument_registry.db.session import connect
 from instrument_registry.service import (
     add_alias,
     blacklist_lei,
+    exclude_title_match,
     fuzzy_match_title,
     fuzzy_match_title_scored,
     lookup_by_isin,
@@ -105,9 +106,10 @@ def test_fuzzy_match_title_scored_reflects_the_candidate_that_actually_matched(t
     matches = fuzzy_match_title_scored("NATIONAL BANK OF GREECE S.A.", threshold=0.6, db_path=db_path)
 
     assert len(matches) == 1
-    ratio, instrument = matches[0]
+    ratio, matched_via, instrument = matches[0]
     assert instrument.isin == "GRS003003035"
     assert ratio > 0.95
+    assert matched_via == "NATIONAL BANK OF GREECE S.A."
 
 
 def test_fuzzy_match_title_falls_back_to_the_linked_entitys_greek_name(tmp_path):
@@ -280,9 +282,10 @@ def test_fuzzy_match_title_matches_an_exact_learned_alias(tmp_path):
     matches = fuzzy_match_title_scored("MIG HOLDINGS SA", threshold=0.9, db_path=db_path)
 
     assert len(matches) == 1
-    ratio, instrument = matches[0]
+    ratio, matched_via, instrument = matches[0]
     assert instrument.isin == "GRS332003008"
     assert ratio == 1.0
+    assert matched_via == "MIG HOLDINGS SA"
 
 
 def test_add_alias_upserts_rather_than_duplicates(tmp_path):
@@ -319,7 +322,7 @@ def test_refresh_athex_never_touches_learned_aliases(tmp_path, monkeypatch):
     refresh_athex(db_path=db_path)
 
     matches = fuzzy_match_title_scored("ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ", threshold=0.9, db_path=db_path)
-    assert [m.isin for _, m in matches] == ["GRS003003035"]
+    assert [m.isin for _, _, m in matches] == ["GRS003003035"]
 
 
 def test_refresh_gleif_leaves_isin_unlinked_when_no_entity_found(tmp_path, monkeypatch):
@@ -336,3 +339,53 @@ def test_refresh_gleif_leaves_isin_unlinked_when_no_entity_found(tmp_path, monke
     # Contrast with the blacklist case: same linked count, different reason.
     assert result.skipped_blacklisted == 0
     assert lookup_by_isin("GRS999999999", db_path=db_path).lei is None
+
+
+def test_exclude_title_match_removes_a_candidate_from_the_ranking(tmp_path):
+    # The real QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε./ADMIE case: two genuinely unrelated
+    # companies whose names share enough generic corporate-boilerplate
+    # ("ΣΥΜΜΕΤΟΧΩΝ Α.Ε.") to produce a plausible-looking ratio ahead of
+    # the real match.
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="ΑΔΜΗΕ ΣΥΜΜΕΤΟΧΩΝ Α.Ε.")
+    _seed_instrument(db_path, isin="GRS310003009", name="QUEST ΣΥΜΜΕΤΟΧΩΝ ΑΝΩΝΥΜΗ ΕΤΑΙΡΕΙΑ")
+
+    before = fuzzy_match_title_scored("QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", threshold=0.6, db_path=db_path)
+    assert before[0][2].isin == "GRS518003009"  # the wrong candidate ranks first
+
+    exclude_title_match("GRS518003009", "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε",
+                         reason="generic boilerplate overlap, not the same company", db_path=db_path)
+
+    after = fuzzy_match_title_scored("QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", threshold=0.6, db_path=db_path)
+    assert [m.isin for _, _, m in after] == ["GRS310003009"]  # the real match now ranks first
+
+
+def test_exclude_title_match_is_scoped_to_the_exact_title_normalized(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="ΑΔΜΗΕ ΣΥΜΜΕΤΟΧΩΝ Α.Ε.")
+
+    exclude_title_match("GRS518003009", "  Quest ΣΥΜΜΕΤΟΧΩΝ Α.Ε  ", db_path=db_path)
+
+    # Different casing/whitespace of the *same* title still excludes...
+    assert fuzzy_match_title_scored("QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", threshold=0.6, db_path=db_path) == []
+    # ...but a genuinely different title is unaffected.
+    matches = fuzzy_match_title_scored("ΑΔΜΗΕ ΣΥΜΜΕΤΟΧΩΝ Α.Ε.", threshold=0.6, db_path=db_path)
+    assert matches[0][2].isin == "GRS518003009"
+
+
+def test_exclude_title_match_upserts_rather_than_duplicates(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="SOME COMPANY")
+
+    exclude_title_match("GRS518003009", "SOME TITLE", reason="first-pass", db_path=db_path)
+    exclude_title_match("GRS518003009", "SOME TITLE", reason="second-pass", db_path=db_path)
+
+    connection = connect(db_path)
+    rows = connection.execute(
+        "SELECT reason FROM title_isin_exclusions WHERE isin = ? AND title_text = ?",
+        ("GRS518003009", "some title"),
+    ).fetchall()
+    connection.close()
+
+    assert len(rows) == 1
+    assert rows[0]["reason"] == "second-pass"

@@ -223,6 +223,46 @@ def blacklist_lei(
         connection.close()
 
 
+def exclude_title_match(
+    isin: str,
+    title_text: str,
+    *,
+    reason: str | None = None,
+    db_path: str | Path | None = None,
+) -> None:
+    """Records that `title_text` must never fuzzy-match `isin`, even if
+    its computed ratio would otherwise clear a caller's threshold — the
+    inverse of `add_alias()` (a *confirmed* alias) for a *confirmed-wrong*
+    candidate instead. See `title_isin_exclusions`' own schema comment for
+    the motivating real case (QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε./ADMIE). `reason`
+    should say how it was established. `title_text` is normalized
+    (stripped + casefolded) before storing, matching how
+    `fuzzy_match_title_scored()` normalizes before comparing — an
+    exclusion is looked up by exact normalized string, not re-scored.
+    Upserts on (isin, title_text), so re-recording the same correction
+    refreshes rather than duplicates. Note `isin`'s FK reference isn't
+    actually enforced (this connection never sets `PRAGMA foreign_keys =
+    ON`, same as `add_alias()`) — a typo'd isin is stored as-is rather
+    than rejected, so double-check the isin came from a real match."""
+    now = datetime.now(UTC).isoformat()
+    normalized_title = title_text.strip().casefold()
+    connection = connect(db_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO title_isin_exclusions (isin, title_text, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(isin, title_text) DO UPDATE SET
+                reason = excluded.reason,
+                created_at = excluded.created_at
+            """,
+            (isin, normalized_title, reason, now),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def lookup_by_isin(isin: str, *, db_path: str | Path | None = None) -> Instrument | None:
     connection = connect(db_path)
     try:
@@ -269,7 +309,7 @@ def fuzzy_match_title(
     `instrument.name` would get a wrong (too-low) number for any match
     that actually came from `other_names` or the linked entity's names.
     """
-    return [instrument for _, instrument in fuzzy_match_title_scored(
+    return [instrument for _, _, instrument in fuzzy_match_title_scored(
         title, instrument_type=instrument_type, threshold=threshold, db_path=db_path)]
 
 
@@ -279,12 +319,25 @@ def fuzzy_match_title_scored(
     instrument_type: str | None = None,
     threshold: float = 0.75,
     db_path: str | Path | None = None,
-) -> list[tuple[float, Instrument]]:
+) -> list[tuple[float, str, Instrument]]:
     """Same matching as `fuzzy_match_title()`, but also returns each
-    match's actual best ratio (against whichever candidate string —
-    name, other_names, a linked entity's names, or a learned alias —
-    produced it), for a caller that wants to judge or display match
-    confidence rather than just take the ranked list."""
+    match's actual best ratio and *which candidate string* (the
+    instrument's own name, one of its `other_names`, a linked entity's
+    name, or a learned alias) produced it, for a caller that wants to
+    judge or display match confidence rather than just take the ranked
+    list. Surfacing the winning candidate specifically (not just the
+    ratio) matters because a plausible-looking ratio can come from
+    generic corporate-boilerplate overlap rather than a genuine name
+    match — a caller showing the reviewer *which string* it actually
+    matched against makes a false positive like that visible at a
+    glance, instead of just an unexplained confidence percentage.
+
+    A `(title, isin)` pair recorded via `exclude_title_match()` is
+    dropped from the candidate list entirely before ranking — not just
+    scored low — so a confirmed-wrong top candidate can't keep
+    resurfacing (letting the next-best genuine candidate take its place)
+    even though the underlying string similarity hasn't changed."""
+    normalized_title = title.strip().casefold()
     connection = connect(db_path)
     try:
         if instrument_type is not None:
@@ -310,26 +363,33 @@ def fuzzy_match_title_scored(
         aliases_by_isin: dict[str, list[str]] = {}
         for alias_row in connection.execute("SELECT isin, alias_text FROM instrument_aliases").fetchall():
             aliases_by_isin.setdefault(alias_row["isin"], []).append(alias_row["alias_text"])
+        excluded_isins = {
+            excl_row["isin"] for excl_row in connection.execute(
+                "SELECT isin FROM title_isin_exclusions WHERE title_text = ?", (normalized_title,)
+            ).fetchall()
+        }
     finally:
         connection.close()
 
-    normalized_title = title.strip().casefold()
-    scored: list[tuple[float, Instrument]] = []
+    scored: list[tuple[float, str, Instrument]] = []
     for row in rows:
+        if row["isin"] in excluded_isins:
+            continue
         instrument = _row_to_instrument(row)
         candidates = [instrument.name, *instrument.other_names, *aliases_by_isin.get(instrument.isin, [])]
         if row["entity_legal_name"] is not None:
             candidates.append(row["entity_legal_name"])
         if row["entity_other_names"]:
             candidates.extend(json.loads(row["entity_other_names"]))
-        best_ratio = max(
-            SequenceMatcher(None, normalized_title, candidate.strip().casefold()).ratio()
-            for candidate in candidates
+        best_candidate, best_ratio = max(
+            ((candidate, SequenceMatcher(None, normalized_title, candidate.strip().casefold()).ratio())
+             for candidate in candidates),
+            key=lambda pair: pair[1],
         )
         if best_ratio >= threshold:
-            scored.append((best_ratio, instrument))
+            scored.append((best_ratio, best_candidate, instrument))
 
-    scored.sort(key=lambda pair: pair[0], reverse=True)
+    scored.sort(key=lambda triple: triple[0], reverse=True)
     return scored
 
 

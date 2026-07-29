@@ -71,6 +71,29 @@ CREATE TABLE IF NOT EXISTS lei_blacklist (
     created_at TEXT NOT NULL,
     PRIMARY KEY (isin, lei)
 );
+
+-- The inverse of instrument_aliases: a specific title string that must
+-- NEVER be considered a match for a specific ISIN, even if its computed
+-- ratio would otherwise clear a caller's threshold. Exists because generic
+-- corporate-boilerplate overlap (e.g. a shared "ΣΥΜΜΕΤΟΧΩΝ Α.Ε."/"Holding
+-- S.A." suffix) can produce a plausible-looking ratio between two
+-- genuinely unrelated companies (confirmed live: "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε."
+-- scored 73% against the unrelated "ADMIE (IPTO) HOLDING S.A.", ahead of
+-- the real match, "QUEST HOLDINGS S.A.", at 72%) — without an exclusion,
+-- every future match against that exact title (including a re-run of a
+-- consumer's own batch matching job) would keep re-deriving the identical
+-- wrong top candidate, since the scoring is deterministic. Same
+-- upstream-can't-touch-it reasoning as instrument_aliases/lei_blacklist:
+-- refresh_athex()/refresh_gleif() never write here. title_text is stored
+-- normalized (stripped + casefolded), matching how fuzzy_match_title_scored()
+-- itself normalizes before comparing.
+CREATE TABLE IF NOT EXISTS title_isin_exclusions (
+    isin       TEXT NOT NULL REFERENCES instruments(isin),
+    title_text TEXT NOT NULL,
+    reason     TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (isin, title_text)
+);
 """
 
 

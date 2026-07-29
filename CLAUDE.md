@@ -39,11 +39,11 @@ Every lookup/match reads local SQLite exclusively — fetch once, cache, query f
 
 ### The central invariant: two kinds of table
 
-The four tables split into two categories, and conflating them causes real data loss:
+The five tables split into two categories, and conflating them causes real data loss:
 
 | Upstream-sourced, regenerable | Locally-learned, **irreplaceable** |
 |---|---|
-| `instruments`, `entities` | `instrument_aliases`, `lei_blacklist` |
+| `instruments`, `entities` | `instrument_aliases`, `lei_blacklist`, `title_isin_exclusions` |
 | rebuilt any time by `refresh_*()` | recoverable from no external source |
 
 `refresh_athex()`/`refresh_gleif()` must never write to the right-hand column — that's
@@ -65,11 +65,19 @@ fills those in. Before any destructive operation on the cache, back it up first.
   for Mermeren Kombinat's ISIN) is recorded in `lei_blacklist`. When a match looks absurd,
   verify against a raw live query before assuming this package has a bug.
 - **`fuzzy_match_title_scored()` is the real implementation**; `fuzzy_match_title()` just
-  drops the ratios. It scores against the instrument's name, its `other_names`, its
-  learned aliases, *and* the linked entity's GLEIF names. That last one matters: ATHEX's
-  data is English-only, while consumers' titles are frequently Greek-script, and GLEIF is
-  where the Greek legal name comes from. A caller recomputing a ratio against only
-  `instrument.name` will get a wrong, too-low number.
+  drops the ratio/matched-candidate. It scores against the instrument's name, its
+  `other_names`, its learned aliases, *and* the linked entity's GLEIF names. That last one
+  matters: ATHEX's data is English-only, while consumers' titles are frequently
+  Greek-script, and GLEIF is where the Greek legal name comes from. A caller recomputing a
+  ratio against only `instrument.name` will get a wrong, too-low number. Since 2026-07-29 it
+  also returns *which* candidate string (name/other_names/alias/entity name) actually won,
+  not just the ratio — plain string similarity can't distinguish a genuine name match from
+  two unrelated companies sharing generic corporate boilerplate (e.g. "ΣΥΜΜΕΤΟΧΩΝ Α.Ε.");
+  showing the reviewer which string matched makes that visible. `title_isin_exclusions`
+  (via `exclude_title_match()`) is the fix for a confirmed case of exactly that: it drops
+  an excluded `(title, isin)` pair from the candidate list entirely, before ranking, so a
+  wrong candidate can't keep outranking the real one no matter how many times matching
+  re-runs.
 - Matching is **advisory** — it ranks candidates and decides nothing.
 
 ## Working in this repo
