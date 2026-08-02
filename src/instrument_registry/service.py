@@ -6,6 +6,7 @@ hit the network.
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -259,6 +260,34 @@ def exclude_title_match(
             (isin, normalized_title, reason, now),
         )
         connection.commit()
+    finally:
+        connection.close()
+
+
+def export_snapshot(*, db_path: str | Path | None = None) -> bytes:
+    """A transactionally-consistent snapshot of the entire cache DB
+    (`instruments`, `entities`, and the three locally-learned tables —
+    `instrument_aliases`, `lei_blacklist`, `title_isin_exclusions`),
+    serialized to bytes. For a consumer that runs this package against a
+    long-lived deployed cache (e.g. a route that calls `add_alias()`/
+    `exclude_title_match()` live) and wants a way to pull that learned
+    state back down — the ATHEX/GLEIF rows are re-fetchable, but the
+    three learned tables are not recoverable from anywhere else, so
+    losing access to a deployed cache without ever downloading it would
+    be a genuine, permanent loss.
+
+    Uses `sqlite3.Connection.backup()` + `serialize()` rather than a raw
+    file read, so a concurrent write from another connection can't be
+    caught mid-transaction — same approach a consumer's own review-DB
+    export routes already use for the same reason."""
+    connection = connect(db_path)
+    try:
+        target = sqlite3.connect(":memory:")
+        try:
+            connection.backup(target)
+            return target.serialize()
+        finally:
+            target.close()
     finally:
         connection.close()
 

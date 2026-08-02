@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from instrument_registry.collector.athex import AthexStock
 from instrument_registry.collector.gleif import GleifEntity
 from instrument_registry.db.session import connect
@@ -7,6 +9,7 @@ from instrument_registry.service import (
     add_alias,
     blacklist_lei,
     exclude_title_match,
+    export_snapshot,
     fuzzy_match_title,
     fuzzy_match_title_scored,
     lookup_by_isin,
@@ -389,3 +392,38 @@ def test_exclude_title_match_upserts_rather_than_duplicates(tmp_path):
 
     assert len(rows) == 1
     assert rows[0]["reason"] == "second-pass"
+
+
+def test_export_snapshot_round_trips_every_table(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA")
+    _seed_entity(db_path, lei="5UMCZOEYKCVFAW8ZLO05", legal_name="NATIONAL BANK OF GREECE S.A.")
+    add_alias("GRS003003035", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ", source="test", db_path=db_path)
+    exclude_title_match("GRS003003035", "SOME UNRELATED TITLE", reason="test", db_path=db_path)
+
+    snapshot = export_snapshot(db_path=db_path)
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.deserialize(snapshot)
+    assert connection.execute("SELECT name FROM instruments").fetchone()["name"] == "NAT. BANK OF GREECE SA"
+    assert connection.execute("SELECT legal_name FROM entities").fetchone()["legal_name"] == "NATIONAL BANK OF GREECE S.A."
+    assert connection.execute("SELECT alias_text FROM instrument_aliases").fetchone()["alias_text"] == "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ"
+    assert connection.execute("SELECT title_text FROM title_isin_exclusions").fetchone()["title_text"] == "some unrelated title"
+
+
+def test_export_snapshot_reflects_a_write_made_after_the_snapshot_function_is_called_again(tmp_path):
+    # Not stale/cached — a second call after a new write sees the new data.
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS003003035", name="OLD NAME")
+
+    before = export_snapshot(db_path=db_path)
+    conn = sqlite3.connect(":memory:")
+    conn.deserialize(before)
+    assert conn.execute("SELECT name FROM instruments").fetchone()[0] == "OLD NAME"
+
+    _seed_instrument(db_path, isin="GRS831003009", name="A SECOND COMPANY")
+    after = export_snapshot(db_path=db_path)
+    conn2 = sqlite3.connect(":memory:")
+    conn2.deserialize(after)
+    assert conn2.execute("SELECT COUNT(*) FROM instruments").fetchone()[0] == 2

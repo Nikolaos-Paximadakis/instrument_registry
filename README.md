@@ -94,6 +94,15 @@ stocks/entities).
   scored low — so the confirmed-wrong candidate can't keep outranking
   the real one. `title_text` is stored normalized (stripped + casefolded)
   to match how matching itself normalizes before comparing.
+- `export_snapshot(db_path=None) -> bytes` — a transactionally-consistent
+  snapshot of the whole cache DB, serialized to bytes (`sqlite3.
+  Connection.backup()` + `serialize()`, not a raw file read, so a
+  concurrent write can't be caught mid-transaction). For a consumer
+  running this package against a long-lived deployed cache — where
+  `add_alias()`/`exclude_title_match()` get called live, e.g. from a
+  web route — to pull the learned state back down; the `instruments`/
+  `entities` tables are re-fetchable from ATHEX/GLEIF, but the three
+  learned tables are not recoverable from anywhere else.
 
 ## Installation
 
