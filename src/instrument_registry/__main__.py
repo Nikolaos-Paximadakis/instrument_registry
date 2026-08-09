@@ -1,12 +1,15 @@
 import sys
 
-from instrument_registry.service import refresh_athex, refresh_gleif
+from instrument_registry.service import refresh_athex, refresh_athex_etfs, refresh_gleif
 
 
 def main() -> None:
     if "--refresh-athex" in sys.argv:
         count = refresh_athex()
         print(f"instrument_registry: upserted {count} ATHEX-sourced instruments.")
+    elif "--refresh-athex-etfs" in sys.argv:
+        count = refresh_athex_etfs()
+        print(f"instrument_registry: upserted {count} ATHEX-sourced ETFs.")
     elif "--refresh-gleif" in sys.argv:
         result = refresh_gleif()
         print(f"instrument_registry: linked {result.linked} instruments to a GLEIF entity (LEI).")
@@ -16,7 +19,10 @@ def main() -> None:
                 "ISIN->LEI link(s); see the lei_blacklist table."
             )
     else:
-        raise SystemExit("Usage: python -m instrument_registry --refresh-athex | --refresh-gleif")
+        raise SystemExit(
+            "Usage: python -m instrument_registry "
+            "--refresh-athex | --refresh-athex-etfs | --refresh-gleif"
+        )
 
 
 if __name__ == "__main__":

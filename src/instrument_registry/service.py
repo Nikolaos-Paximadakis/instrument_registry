@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from instrument_registry.collector.athex import fetch_athex_stocks
+from instrument_registry.collector.athex import fetch_athex_etfs, fetch_athex_stocks
 from instrument_registry.collector.gleif import lookup_lei_by_isin
 from instrument_registry.db.session import connect
 
@@ -82,6 +82,43 @@ def refresh_athex(*, db_path: str | Path | None = None) -> int:
     finally:
         connection.close()
     return len(stocks)
+
+
+def refresh_athex_etfs(*, db_path: str | Path | None = None) -> int:
+    """Fetch ATHEX's current listed-ETFs list and upsert into
+    `instruments`, same upsert semantics as `refresh_athex()` (never
+    clobbers `lei`/`cfi_code`/`currency`) but `instrument_type='etf'`. A
+    separate function rather than folded into `refresh_athex()` because
+    it's a genuinely separate upstream feed (`etfs_en.json` vs
+    `stocks_en.json`) — one failing or being skipped shouldn't affect
+    the other, and `refresh_athex()`'s return value staying "stocks
+    upserted" avoids a silent meaning change for existing callers."""
+    etfs = fetch_athex_etfs()
+    now = datetime.now(UTC).isoformat()
+    connection = connect(db_path)
+    try:
+        for etf in etfs:
+            other_names = sorted(
+                {etf.symbol, etf.issuer_full_name} - {etf.issuer}
+            )
+            connection.execute(
+                """
+                INSERT INTO instruments (
+                    isin, name, other_names, instrument_type, source, updated_at
+                ) VALUES (?, ?, ?, 'etf', 'athex', ?)
+                ON CONFLICT(isin) DO UPDATE SET
+                    name = excluded.name,
+                    other_names = excluded.other_names,
+                    instrument_type = excluded.instrument_type,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (etf.isin, etf.issuer, json.dumps(other_names, ensure_ascii=False), now),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+    return len(etfs)
 
 
 def refresh_gleif(*, db_path: str | Path | None = None) -> GleifRefreshResult:

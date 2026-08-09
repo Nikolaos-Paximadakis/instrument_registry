@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from instrument_registry.collector.athex import fetch_athex_stocks
+from instrument_registry.collector.athex import fetch_athex_etfs, fetch_athex_stocks
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("INSTRUMENT_REGISTRY_LIVE_TESTS"),
@@ -24,3 +24,16 @@ def test_fetch_athex_stocks_returns_real_listed_stocks():
     national_bank = next(stock for stock in stocks if stock.symbol == "ETE")
     assert "NAT" in national_bank.issuer.upper() or "GREECE" in national_bank.issuer.upper()
     assert national_bank.isin.startswith("GR")
+
+
+def test_fetch_athex_etfs_returns_real_listed_etfs_with_an_isin():
+    # Only one ETF was listed live as of 2026-08-09 — this asserts the
+    # shape (every row has a real ISIN), not a specific count, so it
+    # doesn't break the moment ATHEX lists a second one.
+    etfs = fetch_athex_etfs()
+
+    assert len(etfs) >= 1
+    for etf in etfs:
+        assert etf.isin.startswith("GR")
+        assert etf.symbol
+        assert etf.issuer

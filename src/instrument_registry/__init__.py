@@ -11,6 +11,7 @@ from instrument_registry.service import (
     lookup_by_isin,
     lookup_by_lei,
     refresh_athex,
+    refresh_athex_etfs,
     refresh_gleif,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "lookup_by_isin",
     "lookup_by_lei",
     "refresh_athex",
+    "refresh_athex_etfs",
     "refresh_gleif",
 ]
