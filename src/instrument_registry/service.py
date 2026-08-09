@@ -249,6 +249,70 @@ def blacklist_lei(
         connection.close()
 
 
+def remove_alias(
+    isin: str,
+    alias_text: str,
+    *,
+    db_path: str | Path | None = None,
+) -> None:
+    """Undoes `add_alias()` — deletes the `(isin, alias_text)` row, e.g. to
+    correct a mistaken human/AI title-merge decision. No-op if no such row
+    exists."""
+    connection = connect(db_path)
+    try:
+        connection.execute(
+            "DELETE FROM instrument_aliases WHERE isin = ? AND alias_text = ?",
+            (isin, alias_text),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def unblacklist_lei(
+    isin: str,
+    lei: str,
+    *,
+    db_path: str | Path | None = None,
+) -> None:
+    """Undoes `blacklist_lei()` — deletes the `(isin, lei)` row, e.g. to
+    correct a mistaken blacklist entry. Does not relink the LEI itself:
+    the next `refresh_gleif()` run picks it up naturally, since that
+    function only re-queries instruments with `lei IS NULL`. No-op if no
+    such row exists."""
+    connection = connect(db_path)
+    try:
+        connection.execute(
+            "DELETE FROM lei_blacklist WHERE isin = ? AND lei = ?",
+            (isin, lei),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def remove_title_exclusion(
+    isin: str,
+    title_text: str,
+    *,
+    db_path: str | Path | None = None,
+) -> None:
+    """Undoes `exclude_title_match()` — deletes the `(isin, title_text)`
+    row, e.g. to correct a mistaken exclusion. `title_text` is normalized
+    (stripped + casefolded) the same way `exclude_title_match()` stores
+    it, so the same original string (regardless of casing/whitespace)
+    removes the same row. No-op if no such row exists."""
+    connection = connect(db_path)
+    try:
+        connection.execute(
+            "DELETE FROM title_isin_exclusions WHERE isin = ? AND title_text = ?",
+            (isin, title_text.strip().casefold()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def exclude_title_match(
     isin: str,
     title_text: str,
@@ -315,6 +379,52 @@ def export_snapshot(*, db_path: str | Path | None = None) -> bytes:
             target.close()
     finally:
         connection.close()
+
+
+def import_snapshot(
+    data: bytes,
+    *,
+    db_path: str | Path | None = None,
+    overwrite: bool = False,
+) -> None:
+    """The restore counterpart to `export_snapshot()`: writes a snapshot
+    produced by `export_snapshot()` into `db_path`, replacing whatever is
+    there. Refuses to touch a target that already holds any data (any row
+    in `instruments`, `entities`, or the three learned tables) unless
+    `overwrite=True` — a snapshot import is exactly the kind of
+    destructive operation CLAUDE.md says to back up before doing, and the
+    three learned tables cannot be recovered if a caller accidentally
+    imports over them.
+
+    Uses `sqlite3.Connection.deserialize()` into a fresh in-memory
+    connection, then `backup()` onto the real target — the same
+    serialize/backup primitives `export_snapshot()` uses, so the restore
+    is a single atomic write against `db_path` rather than a raw file
+    overwrite that could be caught mid-write by a concurrent reader."""
+    source = sqlite3.connect(":memory:")
+    try:
+        source.deserialize(data)
+        target = connect(db_path)
+        try:
+            if not overwrite:
+                counts = [
+                    target.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    for table in (
+                        "instruments", "entities", "instrument_aliases",
+                        "lei_blacklist", "title_isin_exclusions",
+                    )
+                ]
+                if any(counts):
+                    raise ValueError(
+                        f"refusing to import_snapshot() into a non-empty database at "
+                        f"{db_path!r} without overwrite=True"
+                    )
+            source.backup(target)
+            target.commit()
+        finally:
+            target.close()
+    finally:
+        source.close()
 
 
 def lookup_by_isin(isin: str, *, db_path: str | Path | None = None) -> Instrument | None:

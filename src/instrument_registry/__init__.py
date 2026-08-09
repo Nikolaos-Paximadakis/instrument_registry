@@ -11,6 +11,7 @@ from instrument_registry.service import (
     export_snapshot,
     fuzzy_match_title,
     fuzzy_match_title_scored,
+    import_snapshot,
     list_aliases,
     list_blacklisted,
     list_title_exclusions,
@@ -18,6 +19,9 @@ from instrument_registry.service import (
     lookup_by_lei,
     refresh_athex,
     refresh_gleif,
+    remove_alias,
+    remove_title_exclusion,
+    unblacklist_lei,
 )
 
 __all__ = [
@@ -33,6 +37,7 @@ __all__ = [
     "export_snapshot",
     "fuzzy_match_title",
     "fuzzy_match_title_scored",
+    "import_snapshot",
     "list_aliases",
     "list_blacklisted",
     "list_title_exclusions",
@@ -40,4 +45,7 @@ __all__ = [
     "lookup_by_lei",
     "refresh_athex",
     "refresh_gleif",
+    "remove_alias",
+    "remove_title_exclusion",
+    "unblacklist_lei",
 ]

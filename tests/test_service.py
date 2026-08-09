@@ -12,6 +12,7 @@ from instrument_registry.service import (
     export_snapshot,
     fuzzy_match_title,
     fuzzy_match_title_scored,
+    import_snapshot,
     list_aliases,
     list_blacklisted,
     list_title_exclusions,
@@ -19,6 +20,9 @@ from instrument_registry.service import (
     lookup_by_lei,
     refresh_athex,
     refresh_gleif,
+    remove_alias,
+    remove_title_exclusion,
+    unblacklist_lei,
 )
 
 
@@ -397,6 +401,116 @@ def test_exclude_title_match_upserts_rather_than_duplicates(tmp_path):
     assert rows[0]["reason"] == "second-pass"
 
 
+def test_remove_alias_deletes_the_row(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    add_alias("GRS332003008", "AN ALIAS", source="test", db_path=db_path)
+
+    remove_alias("GRS332003008", "AN ALIAS", db_path=db_path)
+
+    connection = connect(db_path)
+    rows = connection.execute(
+        "SELECT * FROM instrument_aliases WHERE isin = ? AND alias_text = ?",
+        ("GRS332003008", "AN ALIAS"),
+    ).fetchall()
+    connection.close()
+    assert rows == []
+
+
+def test_remove_alias_is_a_noop_for_a_nonexistent_alias(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+
+    remove_alias("GRS332003008", "NEVER ADDED", db_path=db_path)  # must not raise
+
+
+def test_unblacklist_lei_deletes_the_row_without_relinking(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_entity(db_path, lei="213800OYHR1MPQ5VJL60", legal_name="PIRAEUS BANK S.A.")
+    _seed_instrument(db_path, isin="GRK014011008", name="MERMEREN KOMBINAT A.D. PRILEP")
+    blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+
+    unblacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+
+    connection = connect(db_path)
+    rows = connection.execute(
+        "SELECT * FROM lei_blacklist WHERE isin = ? AND lei = ?",
+        ("GRK014011008", "213800OYHR1MPQ5VJL60"),
+    ).fetchall()
+    connection.close()
+    assert rows == []
+    # Removing the blacklist entry doesn't itself relink — that's refresh_gleif()'s job.
+    assert lookup_by_isin("GRK014011008", db_path=db_path).lei is None
+
+
+def test_unblacklist_lei_lets_refresh_gleif_relink_the_pair(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRK014011008", name="MERMEREN KOMBINAT A.D. PRILEP")
+    blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    unblacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+
+    monkeypatch.setattr(
+        "instrument_registry.service.lookup_lei_by_isin",
+        lambda isin: GleifEntity(
+            lei="213800OYHR1MPQ5VJL60",
+            legal_name="PIRAEUS BANK S.A.",
+            other_names=[],
+            country="GR",
+            status="ACTIVE",
+        ),
+    )
+
+    result = refresh_gleif(db_path=db_path)
+
+    assert result.linked == 1
+    assert result.skipped_blacklisted == 0
+    assert lookup_by_isin("GRK014011008", db_path=db_path).lei == "213800OYHR1MPQ5VJL60"
+
+
+def test_unblacklist_lei_is_a_noop_for_a_nonexistent_entry(tmp_path):
+    db_path = tmp_path / "registry.db"
+    unblacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)  # must not raise
+
+
+def test_remove_title_exclusion_restores_the_candidate_to_ranking(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="ΑΔΜΗΕ ΣΥΜΜΕΤΟΧΩΝ Α.Ε.")
+    _seed_instrument(db_path, isin="GRS310003009", name="QUEST ΣΥΜΜΕΤΟΧΩΝ ΑΝΩΝΥΜΗ ΕΤΑΙΡΕΙΑ")
+    exclude_title_match("GRS518003009", "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", db_path=db_path)
+    assert [m.isin for _, _, m in fuzzy_match_title_scored(
+        "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", threshold=0.6, db_path=db_path
+    )] == ["GRS310003009"]
+
+    remove_title_exclusion("GRS518003009", "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", db_path=db_path)
+
+    isins = {m.isin for _, _, m in fuzzy_match_title_scored(
+        "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", threshold=0.6, db_path=db_path
+    )}
+    assert "GRS518003009" in isins
+
+
+def test_remove_title_exclusion_is_scoped_to_the_exact_title_normalized(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="ΑΔΜΗΕ ΣΥΜΜΕΤΟΧΩΝ Α.Ε.")
+    exclude_title_match("GRS518003009", "  Quest ΣΥΜΜΕΤΟΧΩΝ Α.Ε  ", db_path=db_path)
+
+    remove_title_exclusion("GRS518003009", "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", db_path=db_path)
+
+    connection = connect(db_path)
+    rows = connection.execute(
+        "SELECT * FROM title_isin_exclusions WHERE isin = ?", ("GRS518003009",)
+    ).fetchall()
+    connection.close()
+    assert rows == []
+
+
+def test_remove_title_exclusion_is_a_noop_for_a_nonexistent_entry(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="SOME COMPANY")
+
+    remove_title_exclusion("GRS518003009", "NEVER EXCLUDED", db_path=db_path)  # must not raise
+
+
 def test_list_aliases_returns_all_aliases_for_the_isin_oldest_first(tmp_path):
     db_path = tmp_path / "registry.db"
     _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
@@ -499,3 +613,66 @@ def test_export_snapshot_reflects_a_write_made_after_the_snapshot_function_is_ca
     conn2 = sqlite3.connect(":memory:")
     conn2.deserialize(after)
     assert conn2.execute("SELECT COUNT(*) FROM instruments").fetchone()[0] == 2
+
+
+def test_import_snapshot_restores_every_table_into_an_empty_db(tmp_path):
+    source_path = tmp_path / "source.db"
+    _seed_instrument(source_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA")
+    _seed_entity(source_path, lei="5UMCZOEYKCVFAW8ZLO05", legal_name="NATIONAL BANK OF GREECE S.A.")
+    add_alias("GRS003003035", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ", source="test", db_path=source_path)
+    exclude_title_match("GRS003003035", "SOME UNRELATED TITLE", reason="test", db_path=source_path)
+    blacklist_lei("GRS003003035", "213800OYHR1MPQ5VJL60", db_path=source_path)
+    snapshot = export_snapshot(db_path=source_path)
+
+    target_path = tmp_path / "target.db"
+    import_snapshot(snapshot, db_path=target_path)
+
+    instrument = lookup_by_isin("GRS003003035", db_path=target_path)
+    assert instrument is not None
+    assert instrument.name == "NAT. BANK OF GREECE SA"
+    entity = lookup_by_lei("5UMCZOEYKCVFAW8ZLO05", db_path=target_path)
+    assert entity is not None
+    connection = connect(target_path)
+    aliases = connection.execute("SELECT alias_text FROM instrument_aliases").fetchall()
+    exclusions = connection.execute("SELECT title_text FROM title_isin_exclusions").fetchall()
+    blacklisted = connection.execute("SELECT isin, lei FROM lei_blacklist").fetchall()
+    connection.close()
+    assert [row["alias_text"] for row in aliases] == ["ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ"]
+    assert [row["title_text"] for row in exclusions] == ["some unrelated title"]
+    assert [(row["isin"], row["lei"]) for row in blacklisted] == [("GRS003003035", "213800OYHR1MPQ5VJL60")]
+
+
+def test_import_snapshot_refuses_to_overwrite_a_nonempty_db_by_default(tmp_path):
+    source_path = tmp_path / "source.db"
+    _seed_instrument(source_path, isin="GRS003003035", name="NEW DATA")
+    snapshot = export_snapshot(db_path=source_path)
+
+    target_path = tmp_path / "target.db"
+    _seed_instrument(target_path, isin="GRS831003009", name="EXISTING DATA, MUST SURVIVE")
+
+    try:
+        import_snapshot(snapshot, db_path=target_path)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+    instrument = lookup_by_isin("GRS831003009", db_path=target_path)
+    assert instrument is not None
+    assert instrument.name == "EXISTING DATA, MUST SURVIVE"
+    assert lookup_by_isin("GRS003003035", db_path=target_path) is None
+
+
+def test_import_snapshot_overwrite_true_replaces_existing_data(tmp_path):
+    source_path = tmp_path / "source.db"
+    _seed_instrument(source_path, isin="GRS003003035", name="NEW DATA")
+    snapshot = export_snapshot(db_path=source_path)
+
+    target_path = tmp_path / "target.db"
+    _seed_instrument(target_path, isin="GRS831003009", name="OLD DATA, SHOULD BE REPLACED")
+
+    import_snapshot(snapshot, db_path=target_path, overwrite=True)
+
+    assert lookup_by_isin("GRS831003009", db_path=target_path) is None
+    instrument = lookup_by_isin("GRS003003035", db_path=target_path)
+    assert instrument is not None
+    assert instrument.name == "NEW DATA"
