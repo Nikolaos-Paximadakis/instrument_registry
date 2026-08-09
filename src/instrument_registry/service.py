@@ -356,6 +356,52 @@ def export_snapshot(*, db_path: str | Path | None = None) -> bytes:
         connection.close()
 
 
+def import_snapshot(
+    data: bytes,
+    *,
+    db_path: str | Path | None = None,
+    overwrite: bool = False,
+) -> None:
+    """The restore counterpart to `export_snapshot()`: writes a snapshot
+    produced by `export_snapshot()` into `db_path`, replacing whatever is
+    there. Refuses to touch a target that already holds any data (any row
+    in `instruments`, `entities`, or the three learned tables) unless
+    `overwrite=True` — a snapshot import is exactly the kind of
+    destructive operation CLAUDE.md says to back up before doing, and the
+    three learned tables cannot be recovered if a caller accidentally
+    imports over them.
+
+    Uses `sqlite3.Connection.deserialize()` into a fresh in-memory
+    connection, then `backup()` onto the real target — the same
+    serialize/backup primitives `export_snapshot()` uses, so the restore
+    is a single atomic write against `db_path` rather than a raw file
+    overwrite that could be caught mid-write by a concurrent reader."""
+    source = sqlite3.connect(":memory:")
+    try:
+        source.deserialize(data)
+        target = connect(db_path)
+        try:
+            if not overwrite:
+                counts = [
+                    target.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    for table in (
+                        "instruments", "entities", "instrument_aliases",
+                        "lei_blacklist", "title_isin_exclusions",
+                    )
+                ]
+                if any(counts):
+                    raise ValueError(
+                        f"refusing to import_snapshot() into a non-empty database at "
+                        f"{db_path!r} without overwrite=True"
+                    )
+            source.backup(target)
+            target.commit()
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
 def lookup_by_isin(isin: str, *, db_path: str | Path | None = None) -> Instrument | None:
     connection = connect(db_path)
     try:

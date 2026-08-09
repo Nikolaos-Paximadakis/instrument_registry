@@ -115,6 +115,14 @@ stocks/entities).
   web route — to pull the learned state back down; the `instruments`/
   `entities` tables are re-fetchable from ATHEX/GLEIF, but the three
   learned tables are not recoverable from anywhere else.
+- `import_snapshot(data, db_path=None, overwrite=False) -> None` — the
+  restore counterpart to `export_snapshot()`: writes a snapshot into
+  `db_path` via `deserialize()` + `backup()`, same primitives in
+  reverse. Refuses to touch a `db_path` that already holds any data
+  unless `overwrite=True` — a snapshot import is a destructive
+  operation CLAUDE.md's "back it up first" rule applies to, and the
+  three learned tables can't be recovered if it clobbers them by
+  accident.
 
 ## Installation
 
