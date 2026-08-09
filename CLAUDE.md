@@ -92,3 +92,20 @@ fills those in. Before any destructive operation on the cache, back it up first.
 - Dependencies via `uv` — `uv add <package>` updates `pyproject.toml` + `uv.lock`, both
   committed.
 - The cache DB is gitignored and must stay that way.
+
+## Git/PR workflow
+
+Standing authorization — no need to ask before each push or merge:
+
+- Push commits directly (feature branches, not `main`) without asking first.
+- Open a PR per logical change (keep doing this — it's the review/revert boundary), then
+  **merge it yourself** once `uv run pytest` is green (run
+  `INSTRUMENT_REGISTRY_LIVE_TESTS=1 uv run pytest` too when the change touches a
+  collector). Don't wait for manual approval on the PR itself.
+- Squash-merge (`gh pr merge --squash`), and delete the branch after
+  (`--delete-branch`, or pass both together).
+- This repo has no CI and no branch protection (private, free-tier GitHub) — the test
+  run above *is* the merge gate, so don't skip it.
+- Still ask first for anything actually destructive or hard to reverse — force-push,
+  history rewrites, deleting `main`, or anything touching the cache DB per the backup
+  rule above. This authorization covers routine push/merge only.

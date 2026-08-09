@@ -63,6 +63,12 @@ is unverified — nothing to fetch yet either way.
   reactions. The CLI prints the skipped line only when it's non-zero.
 - `lookup_by_isin(isin, db_path=None) -> Instrument | None`
 - `lookup_by_lei(lei, db_path=None) -> Entity | None`
+- `lookup_by_symbol(symbol, db_path=None) -> Instrument | None` — indexed
+  exact-match lookup by ATHEX ticker (e.g. `"ETE"`), populated by
+  `refresh_athex()`. The symbol also stays in `other_names` as before
+  (fuzzy-matching a bare ticker is unaffected); this is an additive,
+  exact-lookup path, unlike going through `fuzzy_match_title*()` to
+  resolve a ticker.
 - `fuzzy_match_title(title, instrument_type=None, threshold=0.75, db_path=None) -> list[Instrument]`
 - `fuzzy_match_title_scored(title, instrument_type=None, threshold=0.75, db_path=None) -> list[tuple[float, str, Instrument]]`
   — same matching, also returns each match's actual best ratio and *which
@@ -107,6 +113,27 @@ is unverified — nothing to fetch yet either way.
   scored low — so the confirmed-wrong candidate can't keep outranking
   the real one. `title_text` is stored normalized (stripped + casefolded)
   to match how matching itself normalizes before comparing.
+- `remove_alias(isin, alias_text, db_path=None) -> None` — undoes
+  `add_alias()`: deletes the `(isin, alias_text)` row, e.g. to correct a
+  mistaken title-merge decision. No-op if no such row exists.
+- `unblacklist_lei(isin, lei, db_path=None) -> None` — undoes
+  `blacklist_lei()`: deletes the `(isin, lei)` row, e.g. to correct a
+  mistaken blacklist entry. Does not itself relink the LEI — the next
+  `refresh_gleif()` run does that naturally, since it only re-queries
+  instruments with `lei IS NULL`.
+- `remove_title_exclusion(isin, title_text, db_path=None) -> None` —
+  undoes `exclude_title_match()`: deletes the `(isin, title_text)` row
+  (`title_text` normalized the same way `exclude_title_match()` stores
+  it), e.g. to correct a mistaken exclusion. No-op if no such row exists.
+- `list_aliases(isin, db_path=None) -> list[Alias]`,
+  `list_blacklisted(isin=None, db_path=None) -> list[BlacklistEntry]`,
+  `list_title_exclusions(isin, db_path=None) -> list[TitleExclusion]` —
+  read counterparts to `add_alias()`/`blacklist_lei()`/
+  `exclude_title_match()`. Without these, what's been locally learned
+  about an instrument was only visible via raw SQLite; a caller building
+  a review/audit UI can now show it through the public API instead.
+  `list_blacklisted()` returns every blacklisted pair if `isin` is
+  omitted, or just one instrument's if given.
 - `export_snapshot(db_path=None) -> bytes` — a transactionally-consistent
   snapshot of the whole cache DB, serialized to bytes (`sqlite3.
   Connection.backup()` + `serialize()`, not a raw file read, so a
@@ -116,6 +143,14 @@ is unverified — nothing to fetch yet either way.
   web route — to pull the learned state back down; the `instruments`/
   `entities` tables are re-fetchable from ATHEX/GLEIF, but the three
   learned tables are not recoverable from anywhere else.
+- `import_snapshot(data, db_path=None, overwrite=False) -> None` — the
+  restore counterpart to `export_snapshot()`: writes a snapshot into
+  `db_path` via `deserialize()` + `backup()`, same primitives in
+  reverse. Refuses to touch a `db_path` that already holds any data
+  unless `overwrite=True` — a snapshot import is a destructive
+  operation CLAUDE.md's "back it up first" rule applies to, and the
+  three learned tables can't be recovered if it clobbers them by
+  accident.
 
 ## Installation
 
@@ -140,6 +175,14 @@ time by `refresh_athex()`/`refresh_gleif()`, but locally-learned aliases
 are not recoverable from any external source. (Moved here 2026-07-24;
 it previously sat at `src/instrument_registry/db/instrument_registry.db`,
 inside the package.)
+
+Schema changes to an existing table (as opposed to a brand-new one)
+need an explicit migration, since `CREATE TABLE IF NOT EXISTS` only
+handles a table that doesn't exist yet — `db/models.py`'s `_migrate()`
+runs on every `connect()`, guarded by checking `PRAGMA table_info`
+first, so it's a no-op on a DB that's already current. This is how
+`instruments.symbol` was added without requiring every already-deployed
+cache to be manually altered.
 
 ## CLI
 
