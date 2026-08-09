@@ -12,6 +12,7 @@ from instrument_registry.service import (
     export_snapshot,
     fuzzy_match_title,
     fuzzy_match_title_scored,
+    import_snapshot,
     lookup_by_isin,
     lookup_by_lei,
     refresh_athex,
@@ -427,3 +428,66 @@ def test_export_snapshot_reflects_a_write_made_after_the_snapshot_function_is_ca
     conn2 = sqlite3.connect(":memory:")
     conn2.deserialize(after)
     assert conn2.execute("SELECT COUNT(*) FROM instruments").fetchone()[0] == 2
+
+
+def test_import_snapshot_restores_every_table_into_an_empty_db(tmp_path):
+    source_path = tmp_path / "source.db"
+    _seed_instrument(source_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA")
+    _seed_entity(source_path, lei="5UMCZOEYKCVFAW8ZLO05", legal_name="NATIONAL BANK OF GREECE S.A.")
+    add_alias("GRS003003035", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ", source="test", db_path=source_path)
+    exclude_title_match("GRS003003035", "SOME UNRELATED TITLE", reason="test", db_path=source_path)
+    blacklist_lei("GRS003003035", "213800OYHR1MPQ5VJL60", db_path=source_path)
+    snapshot = export_snapshot(db_path=source_path)
+
+    target_path = tmp_path / "target.db"
+    import_snapshot(snapshot, db_path=target_path)
+
+    instrument = lookup_by_isin("GRS003003035", db_path=target_path)
+    assert instrument is not None
+    assert instrument.name == "NAT. BANK OF GREECE SA"
+    entity = lookup_by_lei("5UMCZOEYKCVFAW8ZLO05", db_path=target_path)
+    assert entity is not None
+    connection = connect(target_path)
+    aliases = connection.execute("SELECT alias_text FROM instrument_aliases").fetchall()
+    exclusions = connection.execute("SELECT title_text FROM title_isin_exclusions").fetchall()
+    blacklisted = connection.execute("SELECT isin, lei FROM lei_blacklist").fetchall()
+    connection.close()
+    assert [row["alias_text"] for row in aliases] == ["ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ"]
+    assert [row["title_text"] for row in exclusions] == ["some unrelated title"]
+    assert [(row["isin"], row["lei"]) for row in blacklisted] == [("GRS003003035", "213800OYHR1MPQ5VJL60")]
+
+
+def test_import_snapshot_refuses_to_overwrite_a_nonempty_db_by_default(tmp_path):
+    source_path = tmp_path / "source.db"
+    _seed_instrument(source_path, isin="GRS003003035", name="NEW DATA")
+    snapshot = export_snapshot(db_path=source_path)
+
+    target_path = tmp_path / "target.db"
+    _seed_instrument(target_path, isin="GRS831003009", name="EXISTING DATA, MUST SURVIVE")
+
+    try:
+        import_snapshot(snapshot, db_path=target_path)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+    instrument = lookup_by_isin("GRS831003009", db_path=target_path)
+    assert instrument is not None
+    assert instrument.name == "EXISTING DATA, MUST SURVIVE"
+    assert lookup_by_isin("GRS003003035", db_path=target_path) is None
+
+
+def test_import_snapshot_overwrite_true_replaces_existing_data(tmp_path):
+    source_path = tmp_path / "source.db"
+    _seed_instrument(source_path, isin="GRS003003035", name="NEW DATA")
+    snapshot = export_snapshot(db_path=source_path)
+
+    target_path = tmp_path / "target.db"
+    _seed_instrument(target_path, isin="GRS831003009", name="OLD DATA, SHOULD BE REPLACED")
+
+    import_snapshot(snapshot, db_path=target_path, overwrite=True)
+
+    assert lookup_by_isin("GRS831003009", db_path=target_path) is None
+    instrument = lookup_by_isin("GRS003003035", db_path=target_path)
+    assert instrument is not None
+    assert instrument.name == "NEW DATA"
