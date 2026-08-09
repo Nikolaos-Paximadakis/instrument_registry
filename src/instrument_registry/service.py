@@ -27,6 +27,7 @@ class Instrument:
     currency: str | None
     lei: str | None
     source: str
+    symbol: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,10 +53,13 @@ def refresh_athex(*, db_path: str | Path | None = None) -> int:
     """Fetch ATHEX's current listed-stocks list and upsert into
     `instruments`. Safe to re-run: an existing row's `lei`/`cfi_code`/
     `currency` (filled in by a later step, e.g. `refresh_gleif()`) is
-    never clobbered back to NULL, only `name`/`other_names` refresh.
-    ATHEX's own JSON has none of those three fields — this source is
-    stocks-only, so `instrument_type` is hardcoded to 'stock' rather than
-    left NULL."""
+    never clobbered back to NULL, only `name`/`other_names`/`symbol`
+    refresh. ATHEX's own JSON has none of those first three fields —
+    this source is stocks-only, so `instrument_type` is hardcoded to
+    'stock' rather than left NULL. `symbol` also stays in `other_names`
+    (as before) so fuzzy matching against a bare ticker is unaffected —
+    the dedicated column is additive, for an exact indexed lookup via
+    `lookup_by_symbol()`."""
     stocks = fetch_athex_stocks()
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
@@ -67,16 +71,20 @@ def refresh_athex(*, db_path: str | Path | None = None) -> int:
             connection.execute(
                 """
                 INSERT INTO instruments (
-                    isin, name, other_names, instrument_type, source, updated_at
-                ) VALUES (?, ?, ?, 'stock', 'athex', ?)
+                    isin, name, other_names, instrument_type, source, updated_at, symbol
+                ) VALUES (?, ?, ?, 'stock', 'athex', ?, ?)
                 ON CONFLICT(isin) DO UPDATE SET
                     name = excluded.name,
                     other_names = excluded.other_names,
                     instrument_type = excluded.instrument_type,
                     source = excluded.source,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    symbol = excluded.symbol
                 """,
-                (stock.isin, stock.issuer, json.dumps(other_names, ensure_ascii=False), now),
+                (
+                    stock.isin, stock.issuer, json.dumps(other_names, ensure_ascii=False),
+                    now, stock.symbol,
+                ),
             )
         connection.commit()
     finally:
@@ -314,6 +322,21 @@ def lookup_by_lei(lei: str, *, db_path: str | Path | None = None) -> Entity | No
     return _row_to_entity(row) if row is not None else None
 
 
+def lookup_by_symbol(symbol: str, *, db_path: str | Path | None = None) -> Instrument | None:
+    """Indexed exact-match lookup by ATHEX ticker symbol (e.g. "ETE"),
+    unlike resolving a ticker via `fuzzy_match_title*()` against
+    `other_names`. Only populated by `refresh_athex()`; an instrument
+    from any other future source has `symbol IS NULL`."""
+    connection = connect(db_path)
+    try:
+        row = connection.execute(
+            "SELECT * FROM instruments WHERE symbol = ?", (symbol,)
+        ).fetchone()
+    finally:
+        connection.close()
+    return _row_to_instrument(row) if row is not None else None
+
+
 def fuzzy_match_title(
     title: str,
     *,
@@ -432,6 +455,7 @@ def _row_to_instrument(row) -> Instrument:
         currency=row["currency"],
         lei=row["lei"],
         source=row["source"],
+        symbol=row["symbol"],
     )
 
 
