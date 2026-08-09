@@ -94,6 +94,18 @@ stocks/entities).
   scored low — so the confirmed-wrong candidate can't keep outranking
   the real one. `title_text` is stored normalized (stripped + casefolded)
   to match how matching itself normalizes before comparing.
+- `remove_alias(isin, alias_text, db_path=None) -> None` — undoes
+  `add_alias()`: deletes the `(isin, alias_text)` row, e.g. to correct a
+  mistaken title-merge decision. No-op if no such row exists.
+- `unblacklist_lei(isin, lei, db_path=None) -> None` — undoes
+  `blacklist_lei()`: deletes the `(isin, lei)` row, e.g. to correct a
+  mistaken blacklist entry. Does not itself relink the LEI — the next
+  `refresh_gleif()` run does that naturally, since it only re-queries
+  instruments with `lei IS NULL`.
+- `remove_title_exclusion(isin, title_text, db_path=None) -> None` —
+  undoes `exclude_title_match()`: deletes the `(isin, title_text)` row
+  (`title_text` normalized the same way `exclude_title_match()` stores
+  it), e.g. to correct a mistaken exclusion. No-op if no such row exists.
 - `export_snapshot(db_path=None) -> bytes` — a transactionally-consistent
   snapshot of the whole cache DB, serialized to bytes (`sqlite3.
   Connection.backup()` + `serialize()`, not a raw file read, so a

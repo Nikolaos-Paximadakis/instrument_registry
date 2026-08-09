@@ -17,6 +17,9 @@ from instrument_registry.service import (
     lookup_by_lei,
     refresh_athex,
     refresh_gleif,
+    remove_alias,
+    remove_title_exclusion,
+    unblacklist_lei,
 )
 
 
@@ -393,6 +396,116 @@ def test_exclude_title_match_upserts_rather_than_duplicates(tmp_path):
 
     assert len(rows) == 1
     assert rows[0]["reason"] == "second-pass"
+
+
+def test_remove_alias_deletes_the_row(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    add_alias("GRS332003008", "AN ALIAS", source="test", db_path=db_path)
+
+    remove_alias("GRS332003008", "AN ALIAS", db_path=db_path)
+
+    connection = connect(db_path)
+    rows = connection.execute(
+        "SELECT * FROM instrument_aliases WHERE isin = ? AND alias_text = ?",
+        ("GRS332003008", "AN ALIAS"),
+    ).fetchall()
+    connection.close()
+    assert rows == []
+
+
+def test_remove_alias_is_a_noop_for_a_nonexistent_alias(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+
+    remove_alias("GRS332003008", "NEVER ADDED", db_path=db_path)  # must not raise
+
+
+def test_unblacklist_lei_deletes_the_row_without_relinking(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_entity(db_path, lei="213800OYHR1MPQ5VJL60", legal_name="PIRAEUS BANK S.A.")
+    _seed_instrument(db_path, isin="GRK014011008", name="MERMEREN KOMBINAT A.D. PRILEP")
+    blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+
+    unblacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+
+    connection = connect(db_path)
+    rows = connection.execute(
+        "SELECT * FROM lei_blacklist WHERE isin = ? AND lei = ?",
+        ("GRK014011008", "213800OYHR1MPQ5VJL60"),
+    ).fetchall()
+    connection.close()
+    assert rows == []
+    # Removing the blacklist entry doesn't itself relink — that's refresh_gleif()'s job.
+    assert lookup_by_isin("GRK014011008", db_path=db_path).lei is None
+
+
+def test_unblacklist_lei_lets_refresh_gleif_relink_the_pair(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRK014011008", name="MERMEREN KOMBINAT A.D. PRILEP")
+    blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    unblacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+
+    monkeypatch.setattr(
+        "instrument_registry.service.lookup_lei_by_isin",
+        lambda isin: GleifEntity(
+            lei="213800OYHR1MPQ5VJL60",
+            legal_name="PIRAEUS BANK S.A.",
+            other_names=[],
+            country="GR",
+            status="ACTIVE",
+        ),
+    )
+
+    result = refresh_gleif(db_path=db_path)
+
+    assert result.linked == 1
+    assert result.skipped_blacklisted == 0
+    assert lookup_by_isin("GRK014011008", db_path=db_path).lei == "213800OYHR1MPQ5VJL60"
+
+
+def test_unblacklist_lei_is_a_noop_for_a_nonexistent_entry(tmp_path):
+    db_path = tmp_path / "registry.db"
+    unblacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", db_path=db_path)  # must not raise
+
+
+def test_remove_title_exclusion_restores_the_candidate_to_ranking(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="ΑΔΜΗΕ ΣΥΜΜΕΤΟΧΩΝ Α.Ε.")
+    _seed_instrument(db_path, isin="GRS310003009", name="QUEST ΣΥΜΜΕΤΟΧΩΝ ΑΝΩΝΥΜΗ ΕΤΑΙΡΕΙΑ")
+    exclude_title_match("GRS518003009", "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", db_path=db_path)
+    assert [m.isin for _, _, m in fuzzy_match_title_scored(
+        "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", threshold=0.6, db_path=db_path
+    )] == ["GRS310003009"]
+
+    remove_title_exclusion("GRS518003009", "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", db_path=db_path)
+
+    isins = {m.isin for _, _, m in fuzzy_match_title_scored(
+        "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", threshold=0.6, db_path=db_path
+    )}
+    assert "GRS518003009" in isins
+
+
+def test_remove_title_exclusion_is_scoped_to_the_exact_title_normalized(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="ΑΔΜΗΕ ΣΥΜΜΕΤΟΧΩΝ Α.Ε.")
+    exclude_title_match("GRS518003009", "  Quest ΣΥΜΜΕΤΟΧΩΝ Α.Ε  ", db_path=db_path)
+
+    remove_title_exclusion("GRS518003009", "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε", db_path=db_path)
+
+    connection = connect(db_path)
+    rows = connection.execute(
+        "SELECT * FROM title_isin_exclusions WHERE isin = ?", ("GRS518003009",)
+    ).fetchall()
+    connection.close()
+    assert rows == []
+
+
+def test_remove_title_exclusion_is_a_noop_for_a_nonexistent_entry(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="SOME COMPANY")
+
+    remove_title_exclusion("GRS518003009", "NEVER EXCLUDED", db_path=db_path)  # must not raise
 
 
 def test_export_snapshot_round_trips_every_table(tmp_path):
