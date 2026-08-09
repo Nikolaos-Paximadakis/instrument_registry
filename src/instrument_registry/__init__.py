@@ -12,6 +12,9 @@ from instrument_registry.service import (
     lookup_by_lei,
     refresh_athex,
     refresh_gleif,
+    remove_alias,
+    remove_title_exclusion,
+    unblacklist_lei,
 )
 
 __all__ = [
@@ -28,4 +31,7 @@ __all__ = [
     "lookup_by_lei",
     "refresh_athex",
     "refresh_gleif",
+    "remove_alias",
+    "remove_title_exclusion",
+    "unblacklist_lei",
 ]
