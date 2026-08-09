@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from instrument_registry.collector.athex import AthexStock
+from instrument_registry.collector.athex import AthexEtf, AthexStock
 from instrument_registry.collector.gleif import GleifEntity
 from instrument_registry.db.session import connect
 from instrument_registry.service import (
@@ -20,6 +20,7 @@ from instrument_registry.service import (
     lookup_by_lei,
     lookup_by_symbol,
     refresh_athex,
+    refresh_athex_etfs,
     refresh_gleif,
     remove_alias,
     remove_title_exclusion,
@@ -241,6 +242,56 @@ def test_refresh_athex_populates_the_symbol_column(tmp_path, monkeypatch):
     instrument = lookup_by_symbol("ETE", db_path=db_path)
     assert instrument is not None
     assert instrument.isin == "GRS003003035"
+
+
+def test_refresh_athex_etfs_upserts_into_instruments_with_etf_type(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_etfs",
+        lambda: [
+            AthexEtf(
+                isin="GRF000153004",
+                symbol="AETF",
+                issuer="ALPHA ASSET MANAGEMENT M.F.M.C.",
+                issuer_full_name="ALPHA ASSET MANAGEMENT MUTUAL FUNDS MANAGEMENT COMPANY S.A.",
+            )
+        ],
+    )
+
+    count = refresh_athex_etfs(db_path=db_path)
+
+    assert count == 1
+    instrument = lookup_by_isin("GRF000153004", db_path=db_path)
+    assert instrument is not None
+    assert instrument.instrument_type == "etf"
+    assert instrument.name == "ALPHA ASSET MANAGEMENT M.F.M.C."
+    assert instrument.source == "athex"
+
+
+def test_refresh_athex_etfs_does_not_clobber_an_existing_lei(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(
+        db_path, isin="GRF000153004", name="OLD NAME", lei="5UMCZOEYKCVFAW8ZLO05"
+    )
+
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_etfs",
+        lambda: [
+            AthexEtf(
+                isin="GRF000153004",
+                symbol="AETF",
+                issuer="ALPHA ASSET MANAGEMENT M.F.M.C.",
+                issuer_full_name="ALPHA ASSET MANAGEMENT MUTUAL FUNDS MANAGEMENT COMPANY S.A.",
+            )
+        ],
+    )
+
+    refresh_athex_etfs(db_path=db_path)
+
+    instrument = lookup_by_isin("GRF000153004", db_path=db_path)
+    assert instrument.name == "ALPHA ASSET MANAGEMENT M.F.M.C."
+    assert instrument.lei == "5UMCZOEYKCVFAW8ZLO05"
 
 
 def test_refresh_gleif_links_pending_instruments_and_stores_the_entity(tmp_path, monkeypatch):

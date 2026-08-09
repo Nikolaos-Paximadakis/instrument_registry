@@ -22,14 +22,20 @@ wording/instrument" instead of relying on string similarity forever.
 
 ## Phase 1 scope
 
-Greek stocks only, proven end-to-end, before expanding to other
-instrument types (mutual funds, bonds — a materially harder sourcing
-problem, no single free public registry the way ATHEX/GLEIF are for
-stocks/entities).
+Greek stocks (and, since 2026-08-09, ETFs) only, proven end-to-end,
+before expanding to other instrument types. Bonds are a materially
+harder sourcing problem than either: ATHEX's own `bonds_en.json` feed
+has no ISIN field at all (confirmed live 2026-08-09; it's keyed by
+`_productId`/`Symbol` instead), so bonds can't slot into this package's
+ISIN-keyed schema without a separate ISIN source — no single free
+public registry does that the way ATHEX/GLEIF cover stocks/entities.
+Warrants returned 0 live rows on the same date, so their feed's shape
+is unverified — nothing to fetch yet either way.
 
 ## What It Owns
 
-- Fetching ATHEX's current listed-stocks list (ISIN, symbol, issuer name)
+- Fetching ATHEX's current listed-stocks and listed-ETFs lists (ISIN,
+  symbol, issuer name)
 - Looking up the LEI/legal entity behind an instrument's ISIN, via GLEIF's
   free live API
 - Local SQLite cache of both (`entities` + `instruments`), plus local
@@ -42,6 +48,13 @@ stocks/entities).
 
 - `refresh_athex(db_path=None) -> int` — fetch + upsert ATHEX's current
   stock list. Safe to re-run.
+- `refresh_athex_etfs(db_path=None) -> int` — fetch + upsert ATHEX's
+  current ETF list (`instrument_type='etf'`). Same safe-to-re-run
+  upsert semantics as `refresh_athex()`, kept as a separate function
+  and a separate upstream feed (`etfs_en.json`) rather than folded into
+  `refresh_athex()`, so one failing/being skipped doesn't affect the
+  other and `refresh_athex()`'s return value keeps meaning "stocks
+  upserted" for existing callers.
 - `refresh_gleif(db_path=None) -> GleifRefreshResult` — look up and link the
   LEI for any cached instrument that doesn't have one yet. Returns
   `.linked` and `.skipped_blacklisted`; the second exists because `linked`
@@ -175,18 +188,22 @@ cache to be manually altered.
 
 ```bash
 python -m instrument_registry --refresh-athex
+python -m instrument_registry --refresh-athex-etfs
 python -m instrument_registry --refresh-gleif
 ```
 
 ## Data sources
 
 - **ATHEX**: `https://athens.euronext.com/sites/default/files/
-  json_data_files/stocks_en.json` — a static JSON file (no auth). The
-  site sits behind Cloudflare bot protection that blocks a plain/generic
-  HTTP client; `collector/athex.py` uses a browser-header + HTTP/2 client
-  to get through (confirmed live 2026-07-19), the same trick
-  `pothen_eshes.http_client` uses for hellenicparliament.gr's Akamai
-  protection.
+  json_data_files/{stocks,etfs}_en.json` — static JSON files (no auth),
+  one per product type. The site sits behind Cloudflare bot protection
+  that blocks a plain/generic HTTP client; `collector/athex.py` uses a
+  browser-header + HTTP/2 client to get through (confirmed live
+  2026-07-19), the same trick `pothen_eshes.http_client` uses for
+  hellenicparliament.gr's Akamai protection. Sibling `bonds_en.json`/
+  `warrants_en.json` feeds exist too, but aren't fetched: bonds has no
+  ISIN field at all (confirmed live 2026-08-09), and warrants returned
+  0 rows on the same date — see the Phase 1 scope note above.
 - **GLEIF**: `https://api.gleif.org/api/v1/lei-records?filter[isin]=...`
   — GLEIF's free, no-auth, live search API, queried per-ISIN rather than
   bulk-downloading their full global "Golden Copy" file (Phase 1 only
