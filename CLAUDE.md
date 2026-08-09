@@ -81,6 +81,16 @@ fills those in. Before any destructive operation on the cache, back it up first 
   wrong candidate can't keep outranking the real one no matter how many times matching
   re-runs.
 - Matching is **advisory** — it ranks candidates and decides nothing.
+- **A schema migration that adds a column doesn't backfill it.** `db/models.py`'s
+  `_add_column()` can only run `ALTER TABLE ADD COLUMN` — existing rows get that column
+  as NULL until something re-fetches real values into it. This bit `instruments.symbol`
+  for real: the migration shipped, but nobody re-ran `refresh_athex()` against the live
+  cache (local or `pothen_eshes`'s deployed one) until it was noticed weeks later during
+  a backup/restore drill. `_add_column()` now prints a one-time stderr notice the moment
+  it actually runs, naming the refresh that backfills it — but that only helps if
+  someone's watching stderr on every environment that has this cache. Treat "which
+  refresh backfills this column, and has it been re-run everywhere the cache is
+  deployed" as a required step of writing the migration, not an afterthought.
 
 ## Working in this repo
 

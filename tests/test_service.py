@@ -122,6 +122,41 @@ def test_connect_migrates_an_existing_db_missing_the_symbol_column(tmp_path):
     assert lookup_by_symbol("ETE", db_path=db_path) is None  # not backfilled either
 
 
+def test_connect_prints_a_one_time_notice_when_a_migration_actually_runs(tmp_path, capsys):
+    # This is the safety net for the real gap that let instruments.symbol
+    # sit NULL on the live cache for weeks after the migration shipped: a
+    # visible nudge on whichever connect() first hits an un-migrated DB.
+    db_path = tmp_path / "registry.db"
+    raw = sqlite3.connect(db_path)
+    raw.execute(
+        """
+        CREATE TABLE instruments (
+            isin TEXT PRIMARY KEY, name TEXT NOT NULL, other_names TEXT,
+            cfi_code TEXT, instrument_type TEXT, currency TEXT, lei TEXT,
+            source TEXT NOT NULL, updated_at TEXT NOT NULL
+        )
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    connect(db_path).close()
+
+    stderr = capsys.readouterr().err
+    assert "instruments.symbol" in stderr
+    assert "--refresh-athex" in stderr
+
+
+def test_connect_does_not_repeat_the_migration_notice_on_an_already_migrated_db(tmp_path, capsys):
+    db_path = tmp_path / "registry.db"
+    connect(db_path).close()  # fresh DB: symbol already in SCHEMA, no ALTER needed
+    capsys.readouterr()  # discard anything from the first connect
+
+    connect(db_path).close()
+
+    assert capsys.readouterr().err == ""
+
+
 def test_fuzzy_match_title_ranks_by_similarity(tmp_path):
     db_path = tmp_path / "registry.db"
     _seed_instrument(db_path, isin="GRS003003035", name="NATIONAL BANK OF GREECE S.A.")

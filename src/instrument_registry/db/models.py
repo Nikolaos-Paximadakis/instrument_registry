@@ -5,6 +5,7 @@ resolves against: LEI (ISO 17442, entity-level) and ISIN (ISO 6166,
 instrument-level). See ~/Python/pothen_eshes/plans/T23-instrument-registry.md
 for the reasoning.
 """
+import sys
 import sqlite3
 
 SCHEMA = """
@@ -115,9 +116,38 @@ def _migrate(connection: sqlite3.Connection) -> None:
     rather than in `SCHEMA` itself, since `SCHEMA` runs first and would
     otherwise try to index a column that, on an existing pre-migration
     DB, doesn't exist yet."""
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(instruments)")}
-    if "symbol" not in columns:
-        connection.execute("ALTER TABLE instruments ADD COLUMN symbol TEXT")
+    _add_column(
+        connection, table="instruments", column="symbol", ddl="TEXT",
+        backfill_hint="run `python -m instrument_registry --refresh-athex` "
+                       "to backfill it",
+    )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_instruments_symbol ON instruments(symbol)"
     )
+
+
+def _add_column(
+    connection: sqlite3.Connection, *, table: str, column: str, ddl: str, backfill_hint: str
+) -> None:
+    """`ALTER TABLE ADD COLUMN`, guarded so it's a no-op (not an error) once
+    already applied — safe to call unconditionally on every `connect()`,
+    same as the rest of this module.
+
+    Schema-only: adding a column here can't populate it for rows that
+    already existed — only a caller re-fetching from the real source
+    (`refresh_athex()`/`refresh_gleif()`) can do that. Leaving that gap
+    silent is exactly what happened the first time this pattern was used
+    (`instruments.symbol` sat NULL on the real deployed cache until
+    someone happened to notice) — so this prints a one-time notice right
+    when the `ALTER` actually runs, instead of nothing at all. It won't
+    repeat: the guard above means this branch is only ever taken once per
+    database, on whichever `connect()` happens to run first after the
+    column is added to `SCHEMA`."""
+    columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        print(
+            f"instrument_registry: added {table}.{column} to an existing cache — "
+            f"existing rows are NULL until backfilled; {backfill_hint}.",
+            file=sys.stderr,
+        )
