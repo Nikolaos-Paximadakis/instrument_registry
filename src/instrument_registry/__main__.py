@@ -18,10 +18,13 @@ def main() -> None:
                 f"instrument_registry: skipped {result.skipped_blacklisted} known-bad "
                 "ISIN->LEI link(s); see the lei_blacklist table."
             )
+    elif "--backup" in sys.argv:
+        from instrument_registry.backup import main as backup_main
+        raise SystemExit(backup_main([a for a in sys.argv[1:] if a != "--backup"]))
     else:
         raise SystemExit(
             "Usage: python -m instrument_registry "
-            "--refresh-athex | --refresh-athex-etfs | --refresh-gleif"
+            "--refresh-athex | --refresh-athex-etfs | --refresh-gleif | --backup"
         )
 
 

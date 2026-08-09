@@ -19,6 +19,7 @@ uv run pytest tests/test_service.py::test_refresh_gleif_does_not_relink_a_blackl
 INSTRUMENT_REGISTRY_LIVE_TESTS=1 uv run pytest    # also runs the real ATHEX/GLEIF tests
 python -m instrument_registry --refresh-athex     # fetch + upsert ATHEX's stock list
 python -m instrument_registry --refresh-gleif     # link LEIs for instruments missing one
+python -m instrument_registry --backup            # back up the local cache DB (see BACKUP.md)
 ```
 
 No linter or formatter is configured — don't introduce one without asking.
@@ -49,7 +50,8 @@ The five tables split into two categories, and conflating them causes real data 
 `refresh_athex()`/`refresh_gleif()` must never write to the right-hand column — that's
 what makes a refresh safe to re-run. `refresh_athex()`'s upsert also deliberately avoids
 clobbering an existing row's `lei`/`cfi_code`/`currency` back to NULL, since a later step
-fills those in. Before any destructive operation on the cache, back it up first.
+fills those in. Before any destructive operation on the cache, back it up first —
+`uv run python -m instrument_registry --backup` (see BACKUP.md).
 
 ### Things that are non-obvious from a single file
 
@@ -91,7 +93,8 @@ fills those in. Before any destructive operation on the cache, back it up first.
   queried the way it is); it's the reason this package's history is legible.
 - Dependencies via `uv` — `uv add <package>` updates `pyproject.toml` + `uv.lock`, both
   committed.
-- The cache DB is gitignored and must stay that way.
+- The cache DB is gitignored and must stay that way. `backup.py` (`--backup`) is how it
+  gets backed up locally — see BACKUP.md.
 
 ## Git/PR workflow
 
