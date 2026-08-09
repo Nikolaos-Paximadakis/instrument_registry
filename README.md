@@ -94,6 +94,15 @@ stocks/entities).
   scored low — so the confirmed-wrong candidate can't keep outranking
   the real one. `title_text` is stored normalized (stripped + casefolded)
   to match how matching itself normalizes before comparing.
+- `list_aliases(isin, db_path=None) -> list[Alias]`,
+  `list_blacklisted(isin=None, db_path=None) -> list[BlacklistEntry]`,
+  `list_title_exclusions(isin, db_path=None) -> list[TitleExclusion]` —
+  read counterparts to `add_alias()`/`blacklist_lei()`/
+  `exclude_title_match()`. Without these, what's been locally learned
+  about an instrument was only visible via raw SQLite; a caller building
+  a review/audit UI can now show it through the public API instead.
+  `list_blacklisted()` returns every blacklisted pair if `isin` is
+  omitted, or just one instrument's if given.
 - `export_snapshot(db_path=None) -> bytes` — a transactionally-consistent
   snapshot of the whole cache DB, serialized to bytes (`sqlite3.
   Connection.backup()` + `serialize()`, not a raw file read, so a
