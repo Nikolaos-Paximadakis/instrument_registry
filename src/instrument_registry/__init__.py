@@ -1,7 +1,10 @@
 from instrument_registry.service import (
+    Alias,
+    BlacklistEntry,
     Entity,
     GleifRefreshResult,
     Instrument,
+    TitleExclusion,
     add_alias,
     blacklist_lei,
     exclude_title_match,
@@ -9,6 +12,9 @@ from instrument_registry.service import (
     fuzzy_match_title,
     fuzzy_match_title_scored,
     import_snapshot,
+    list_aliases,
+    list_blacklisted,
+    list_title_exclusions,
     lookup_by_isin,
     lookup_by_lei,
     refresh_athex,
@@ -19,9 +25,12 @@ from instrument_registry.service import (
 )
 
 __all__ = [
+    "Alias",
+    "BlacklistEntry",
     "Entity",
     "GleifRefreshResult",
     "Instrument",
+    "TitleExclusion",
     "add_alias",
     "blacklist_lei",
     "exclude_title_match",
@@ -29,6 +38,9 @@ __all__ = [
     "fuzzy_match_title",
     "fuzzy_match_title_scored",
     "import_snapshot",
+    "list_aliases",
+    "list_blacklisted",
+    "list_title_exclusions",
     "lookup_by_isin",
     "lookup_by_lei",
     "refresh_athex",

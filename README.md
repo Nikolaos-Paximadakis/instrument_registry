@@ -106,6 +106,15 @@ stocks/entities).
   undoes `exclude_title_match()`: deletes the `(isin, title_text)` row
   (`title_text` normalized the same way `exclude_title_match()` stores
   it), e.g. to correct a mistaken exclusion. No-op if no such row exists.
+- `list_aliases(isin, db_path=None) -> list[Alias]`,
+  `list_blacklisted(isin=None, db_path=None) -> list[BlacklistEntry]`,
+  `list_title_exclusions(isin, db_path=None) -> list[TitleExclusion]` —
+  read counterparts to `add_alias()`/`blacklist_lei()`/
+  `exclude_title_match()`. Without these, what's been locally learned
+  about an instrument was only visible via raw SQLite; a caller building
+  a review/audit UI can now show it through the public API instead.
+  `list_blacklisted()` returns every blacklisted pair if `isin` is
+  omitted, or just one instrument's if given.
 - `export_snapshot(db_path=None) -> bytes` — a transactionally-consistent
   snapshot of the whole cache DB, serialized to bytes (`sqlite3.
   Connection.backup()` + `serialize()`, not a raw file read, so a

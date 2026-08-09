@@ -40,6 +40,31 @@ class Entity:
 
 
 @dataclass(frozen=True, slots=True)
+class Alias:
+    isin: str
+    alias_text: str
+    source: str
+    confidence: float | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class BlacklistEntry:
+    isin: str
+    lei: str
+    reason: str | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class TitleExclusion:
+    isin: str
+    title_text: str
+    reason: str | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class GleifRefreshResult:
     """What a `refresh_gleif()` run did. `linked` alone can't distinguish a
     run that found nothing from one that suppressed a known-bad link, which
@@ -422,6 +447,63 @@ def lookup_by_lei(lei: str, *, db_path: str | Path | None = None) -> Entity | No
     finally:
         connection.close()
     return _row_to_entity(row) if row is not None else None
+
+
+def list_aliases(isin: str, *, db_path: str | Path | None = None) -> list[Alias]:
+    """Every locally-learned alias recorded via `add_alias()` for `isin`,
+    oldest first. Read counterpart to `add_alias()`/`remove_alias()` — a
+    caller building a review/audit UI can show what's been learned about
+    an instrument without reaching into raw SQLite."""
+    connection = connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT isin, alias_text, source, confidence, created_at "
+            "FROM instrument_aliases WHERE isin = ? ORDER BY created_at",
+            (isin,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [Alias(**dict(row)) for row in rows]
+
+
+def list_blacklisted(
+    *, isin: str | None = None, db_path: str | Path | None = None
+) -> list[BlacklistEntry]:
+    """Every `(isin, lei)` pair recorded via `blacklist_lei()`, oldest
+    first — every blacklisted pair if `isin` is omitted, or just the ones
+    for one instrument. Read counterpart to `blacklist_lei()`/
+    `unblacklist_lei()`."""
+    connection = connect(db_path)
+    try:
+        if isin is not None:
+            rows = connection.execute(
+                "SELECT isin, lei, reason, created_at FROM lei_blacklist "
+                "WHERE isin = ? ORDER BY created_at",
+                (isin,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT isin, lei, reason, created_at FROM lei_blacklist ORDER BY created_at"
+            ).fetchall()
+    finally:
+        connection.close()
+    return [BlacklistEntry(**dict(row)) for row in rows]
+
+
+def list_title_exclusions(isin: str, *, db_path: str | Path | None = None) -> list[TitleExclusion]:
+    """Every `(isin, title_text)` exclusion recorded via
+    `exclude_title_match()` for `isin`, oldest first. Read counterpart to
+    `exclude_title_match()`/`remove_title_exclusion()`."""
+    connection = connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT isin, title_text, reason, created_at FROM title_isin_exclusions "
+            "WHERE isin = ? ORDER BY created_at",
+            (isin,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [TitleExclusion(**dict(row)) for row in rows]
 
 
 def fuzzy_match_title(

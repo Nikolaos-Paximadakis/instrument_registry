@@ -13,6 +13,9 @@ from instrument_registry.service import (
     fuzzy_match_title,
     fuzzy_match_title_scored,
     import_snapshot,
+    list_aliases,
+    list_blacklisted,
+    list_title_exclusions,
     lookup_by_isin,
     lookup_by_lei,
     refresh_athex,
@@ -506,6 +509,75 @@ def test_remove_title_exclusion_is_a_noop_for_a_nonexistent_entry(tmp_path):
     _seed_instrument(db_path, isin="GRS518003009", name="SOME COMPANY")
 
     remove_title_exclusion("GRS518003009", "NEVER EXCLUDED", db_path=db_path)  # must not raise
+
+
+def test_list_aliases_returns_all_aliases_for_the_isin_oldest_first(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    _seed_instrument(db_path, isin="GRS999999999", name="A DIFFERENT COMPANY")
+    add_alias("GRS332003008", "ALIAS ONE", source="first-pass", confidence=0.8, db_path=db_path)
+    add_alias("GRS332003008", "ALIAS TWO", source="second-pass", db_path=db_path)
+    add_alias("GRS999999999", "UNRELATED ALIAS", source="test", db_path=db_path)
+
+    aliases = list_aliases("GRS332003008", db_path=db_path)
+
+    assert [a.alias_text for a in aliases] == ["ALIAS ONE", "ALIAS TWO"]
+    assert aliases[0].source == "first-pass"
+    assert aliases[0].confidence == 0.8
+
+
+def test_list_aliases_returns_empty_for_an_isin_with_none(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+
+    assert list_aliases("GRS332003008", db_path=db_path) == []
+
+
+def test_list_blacklisted_returns_all_pairs_when_isin_omitted(tmp_path):
+    db_path = tmp_path / "registry.db"
+    blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", reason="wrong upstream", db_path=db_path)
+    blacklist_lei("GRS999999999", "5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
+
+    entries = list_blacklisted(db_path=db_path)
+
+    assert {(e.isin, e.lei) for e in entries} == {
+        ("GRK014011008", "213800OYHR1MPQ5VJL60"),
+        ("GRS999999999", "5UMCZOEYKCVFAW8ZLO05"),
+    }
+
+
+def test_list_blacklisted_filters_by_isin_when_given(tmp_path):
+    db_path = tmp_path / "registry.db"
+    blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", reason="wrong upstream", db_path=db_path)
+    blacklist_lei("GRS999999999", "5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
+
+    entries = list_blacklisted(isin="GRK014011008", db_path=db_path)
+
+    assert len(entries) == 1
+    assert entries[0].lei == "213800OYHR1MPQ5VJL60"
+    assert entries[0].reason == "wrong upstream"
+
+
+def test_list_title_exclusions_returns_all_exclusions_for_the_isin(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="ΑΔΜΗΕ ΣΥΜΜΕΤΟΧΩΝ Α.Ε.")
+    exclude_title_match(
+        "GRS518003009", "QUEST ΣΥΜΜΕΤΟΧΩΝ Α.Ε",
+        reason="generic boilerplate overlap, not the same company", db_path=db_path,
+    )
+
+    exclusions = list_title_exclusions("GRS518003009", db_path=db_path)
+
+    assert len(exclusions) == 1
+    assert exclusions[0].title_text == "quest συμμετοχων α.ε"
+    assert exclusions[0].reason == "generic boilerplate overlap, not the same company"
+
+
+def test_list_title_exclusions_returns_empty_for_an_isin_with_none(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="SOME COMPANY")
+
+    assert list_title_exclusions("GRS518003009", db_path=db_path) == []
 
 
 def test_export_snapshot_round_trips_every_table(tmp_path):
