@@ -175,6 +175,3 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-
-# instrument_registry local cache
-src/instrument_registry/db/instrument_registry.db

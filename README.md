@@ -184,12 +184,16 @@ first, so it's a no-op on a DB that's already current. This is how
 `instruments.symbol` was added without requiring every already-deployed
 cache to be manually altered.
 
+**Back it up**: `uv run python -m instrument_registry --backup` — see
+BACKUP.md for what's backed up, where, and how to restore.
+
 ## CLI
 
 ```bash
 python -m instrument_registry --refresh-athex
 python -m instrument_registry --refresh-athex-etfs
 python -m instrument_registry --refresh-gleif
+python -m instrument_registry --backup
 ```
 
 ## Data sources
