@@ -41,6 +41,31 @@ class Entity:
 
 
 @dataclass(frozen=True, slots=True)
+class Alias:
+    isin: str
+    alias_text: str
+    source: str
+    confidence: float | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class BlacklistEntry:
+    isin: str
+    lei: str
+    reason: str | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class TitleExclusion:
+    isin: str
+    title_text: str
+    reason: str | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class GleifRefreshResult:
     """What a `refresh_gleif()` run did. `linked` alone can't distinguish a
     run that found nothing from one that suppressed a known-bad link, which
@@ -232,6 +257,70 @@ def blacklist_lei(
         connection.close()
 
 
+def remove_alias(
+    isin: str,
+    alias_text: str,
+    *,
+    db_path: str | Path | None = None,
+) -> None:
+    """Undoes `add_alias()` — deletes the `(isin, alias_text)` row, e.g. to
+    correct a mistaken human/AI title-merge decision. No-op if no such row
+    exists."""
+    connection = connect(db_path)
+    try:
+        connection.execute(
+            "DELETE FROM instrument_aliases WHERE isin = ? AND alias_text = ?",
+            (isin, alias_text),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def unblacklist_lei(
+    isin: str,
+    lei: str,
+    *,
+    db_path: str | Path | None = None,
+) -> None:
+    """Undoes `blacklist_lei()` — deletes the `(isin, lei)` row, e.g. to
+    correct a mistaken blacklist entry. Does not relink the LEI itself:
+    the next `refresh_gleif()` run picks it up naturally, since that
+    function only re-queries instruments with `lei IS NULL`. No-op if no
+    such row exists."""
+    connection = connect(db_path)
+    try:
+        connection.execute(
+            "DELETE FROM lei_blacklist WHERE isin = ? AND lei = ?",
+            (isin, lei),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def remove_title_exclusion(
+    isin: str,
+    title_text: str,
+    *,
+    db_path: str | Path | None = None,
+) -> None:
+    """Undoes `exclude_title_match()` — deletes the `(isin, title_text)`
+    row, e.g. to correct a mistaken exclusion. `title_text` is normalized
+    (stripped + casefolded) the same way `exclude_title_match()` stores
+    it, so the same original string (regardless of casing/whitespace)
+    removes the same row. No-op if no such row exists."""
+    connection = connect(db_path)
+    try:
+        connection.execute(
+            "DELETE FROM title_isin_exclusions WHERE isin = ? AND title_text = ?",
+            (isin, title_text.strip().casefold()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def exclude_title_match(
     isin: str,
     title_text: str,
@@ -300,6 +389,52 @@ def export_snapshot(*, db_path: str | Path | None = None) -> bytes:
         connection.close()
 
 
+def import_snapshot(
+    data: bytes,
+    *,
+    db_path: str | Path | None = None,
+    overwrite: bool = False,
+) -> None:
+    """The restore counterpart to `export_snapshot()`: writes a snapshot
+    produced by `export_snapshot()` into `db_path`, replacing whatever is
+    there. Refuses to touch a target that already holds any data (any row
+    in `instruments`, `entities`, or the three learned tables) unless
+    `overwrite=True` — a snapshot import is exactly the kind of
+    destructive operation CLAUDE.md says to back up before doing, and the
+    three learned tables cannot be recovered if a caller accidentally
+    imports over them.
+
+    Uses `sqlite3.Connection.deserialize()` into a fresh in-memory
+    connection, then `backup()` onto the real target — the same
+    serialize/backup primitives `export_snapshot()` uses, so the restore
+    is a single atomic write against `db_path` rather than a raw file
+    overwrite that could be caught mid-write by a concurrent reader."""
+    source = sqlite3.connect(":memory:")
+    try:
+        source.deserialize(data)
+        target = connect(db_path)
+        try:
+            if not overwrite:
+                counts = [
+                    target.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    for table in (
+                        "instruments", "entities", "instrument_aliases",
+                        "lei_blacklist", "title_isin_exclusions",
+                    )
+                ]
+                if any(counts):
+                    raise ValueError(
+                        f"refusing to import_snapshot() into a non-empty database at "
+                        f"{db_path!r} without overwrite=True"
+                    )
+            source.backup(target)
+            target.commit()
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
 def lookup_by_isin(isin: str, *, db_path: str | Path | None = None) -> Instrument | None:
     connection = connect(db_path)
     try:
@@ -335,6 +470,63 @@ def lookup_by_symbol(symbol: str, *, db_path: str | Path | None = None) -> Instr
     finally:
         connection.close()
     return _row_to_instrument(row) if row is not None else None
+
+
+def list_aliases(isin: str, *, db_path: str | Path | None = None) -> list[Alias]:
+    """Every locally-learned alias recorded via `add_alias()` for `isin`,
+    oldest first. Read counterpart to `add_alias()`/`remove_alias()` — a
+    caller building a review/audit UI can show what's been learned about
+    an instrument without reaching into raw SQLite."""
+    connection = connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT isin, alias_text, source, confidence, created_at "
+            "FROM instrument_aliases WHERE isin = ? ORDER BY created_at",
+            (isin,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [Alias(**dict(row)) for row in rows]
+
+
+def list_blacklisted(
+    *, isin: str | None = None, db_path: str | Path | None = None
+) -> list[BlacklistEntry]:
+    """Every `(isin, lei)` pair recorded via `blacklist_lei()`, oldest
+    first — every blacklisted pair if `isin` is omitted, or just the ones
+    for one instrument. Read counterpart to `blacklist_lei()`/
+    `unblacklist_lei()`."""
+    connection = connect(db_path)
+    try:
+        if isin is not None:
+            rows = connection.execute(
+                "SELECT isin, lei, reason, created_at FROM lei_blacklist "
+                "WHERE isin = ? ORDER BY created_at",
+                (isin,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT isin, lei, reason, created_at FROM lei_blacklist ORDER BY created_at"
+            ).fetchall()
+    finally:
+        connection.close()
+    return [BlacklistEntry(**dict(row)) for row in rows]
+
+
+def list_title_exclusions(isin: str, *, db_path: str | Path | None = None) -> list[TitleExclusion]:
+    """Every `(isin, title_text)` exclusion recorded via
+    `exclude_title_match()` for `isin`, oldest first. Read counterpart to
+    `exclude_title_match()`/`remove_title_exclusion()`."""
+    connection = connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT isin, title_text, reason, created_at FROM title_isin_exclusions "
+            "WHERE isin = ? ORDER BY created_at",
+            (isin,),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [TitleExclusion(**dict(row)) for row in rows]
 
 
 def fuzzy_match_title(
