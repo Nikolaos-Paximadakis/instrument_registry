@@ -18,6 +18,7 @@ from instrument_registry.service import (
     list_title_exclusions,
     lookup_by_isin,
     lookup_by_lei,
+    lookup_by_symbol,
     refresh_athex,
     refresh_gleif,
     remove_alias,
@@ -77,6 +78,47 @@ def test_lookup_by_lei_returns_the_seeded_entity(tmp_path):
 
     assert entity is not None
     assert entity.legal_name == "NATIONAL BANK OF GREECE S.A."
+
+
+def test_lookup_by_symbol_returns_none_for_unknown_symbol(tmp_path):
+    db_path = tmp_path / "registry.db"
+    assert lookup_by_symbol("ETE", db_path=db_path) is None
+
+
+def test_connect_migrates_an_existing_db_missing_the_symbol_column(tmp_path):
+    # Simulates a DB created before the `symbol` column existed, to prove
+    # the ALTER TABLE migration (not just CREATE TABLE IF NOT EXISTS) runs
+    # for an already-deployed cache.
+    db_path = tmp_path / "registry.db"
+    raw = sqlite3.connect(db_path)
+    raw.execute(
+        """
+        CREATE TABLE instruments (
+            isin TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            other_names TEXT,
+            cfi_code TEXT,
+            instrument_type TEXT,
+            currency TEXT,
+            lei TEXT,
+            source TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    raw.execute(
+        "INSERT INTO instruments (isin, name, source, updated_at) VALUES (?, ?, ?, ?)",
+        ("GRS003003035", "NAT. BANK OF GREECE SA", "athex", "2026-01-01T00:00:00+00:00"),
+    )
+    raw.commit()
+    raw.close()
+
+    connect(db_path).close()  # runs create_schema()/_migrate() as a side effect
+
+    instrument = lookup_by_isin("GRS003003035", db_path=db_path)
+    assert instrument is not None
+    assert instrument.symbol is None  # pre-existing row, not yet backfilled
+    assert lookup_by_symbol("ETE", db_path=db_path) is None  # not backfilled either
 
 
 def test_fuzzy_match_title_ranks_by_similarity(tmp_path):
@@ -177,6 +219,28 @@ def test_refresh_athex_upserts_without_clobbering_existing_lei(tmp_path, monkeyp
     instrument = lookup_by_isin("GRS003003035", db_path=db_path)
     assert instrument.name == "NAT. BANK OF GREECE SA"
     assert instrument.lei == "5UMCZOEYKCVFAW8ZLO05"
+
+
+def test_refresh_athex_populates_the_symbol_column(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_stocks",
+        lambda: [
+            AthexStock(
+                isin="GRS003003035",
+                symbol="ETE",
+                issuer="NAT. BANK OF GREECE SA",
+                issuer_full_name="NATIONAL BANK OF GREECE S.A.",
+                market="SECURITIES MARKET",
+            )
+        ],
+    )
+
+    refresh_athex(db_path=db_path)
+
+    instrument = lookup_by_symbol("ETE", db_path=db_path)
+    assert instrument is not None
+    assert instrument.isin == "GRS003003035"
 
 
 def test_refresh_gleif_links_pending_instruments_and_stores_the_entity(tmp_path, monkeypatch):

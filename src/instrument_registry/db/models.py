@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS instruments (
     currency TEXT,
     lei TEXT REFERENCES entities(lei),
     source TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    symbol TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_instruments_lei ON instruments(lei);
@@ -99,4 +100,24 @@ CREATE TABLE IF NOT EXISTS title_isin_exclusions (
 
 def create_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(SCHEMA)
+    _migrate(connection)
     connection.commit()
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """`CREATE TABLE IF NOT EXISTS` only handles a table that doesn't
+    exist yet — it can't add a column to an `instruments` table an
+    already-deployed cache created before that column existed. Each
+    migration here is guarded by checking `PRAGMA table_info` first, so
+    it's a no-op (not an error) on a DB that already has the column,
+    letting this run unconditionally on every `connect()` like the rest
+    of `create_schema()`. `idx_instruments_symbol` is created here
+    rather than in `SCHEMA` itself, since `SCHEMA` runs first and would
+    otherwise try to index a column that, on an existing pre-migration
+    DB, doesn't exist yet."""
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(instruments)")}
+    if "symbol" not in columns:
+        connection.execute("ALTER TABLE instruments ADD COLUMN symbol TEXT")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_instruments_symbol ON instruments(symbol)"
+    )
