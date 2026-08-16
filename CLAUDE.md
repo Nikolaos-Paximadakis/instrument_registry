@@ -20,6 +20,7 @@ INSTRUMENT_REGISTRY_LIVE_TESTS=1 uv run pytest    # also runs the real ATHEX/GLE
 python -m instrument_registry --refresh-athex     # fetch + upsert ATHEX's stock list
 python -m instrument_registry --refresh-gleif     # link LEIs for instruments missing one
 python -m instrument_registry --backup            # back up the local cache DB (see BACKUP.md)
+python -m instrument_registry --status            # read-only: what's in a cache, what's missing
 ```
 
 No linter or formatter is configured — don't introduce one without asking.
@@ -91,6 +92,17 @@ fills those in. Before any destructive operation on the cache, back it up first 
   someone's watching stderr on every environment that has this cache. Treat "which
   refresh backfills this column, and has it been re-run everywhere the cache is
   deployed" as a required step of writing the migration, not an afterthought.
+- **Shipping a refresh isn't the same as running it.** The same gap bit
+  `refresh_athex_etfs()` in a shape the migration notice above can't catch: it added
+  no column, so nothing fired, and the cache simply held zero ETFs from the day it
+  merged (2026-08-09) until someone ran it (2026-08-16) — which also surfaced that it
+  had never populated `symbol` at all. `--status` (`status.py`) is the general check:
+  read-only, safe against a deployed cache, and it answers "has each refresh ever run
+  here, is what it owns complete, and has a learned table shrunk since the last
+  backup" from the data alone. **Run it on every cache after merging anything that
+  changes what a refresh writes** — and add the new refresh to `status.py`'s
+  `REFRESHES` in the same commit, or its rows are invisible to the very check meant
+  to notice invisible rows (there's a test guarding exactly that).
 
 ## Working in this repo
 

@@ -199,7 +199,43 @@ python -m instrument_registry --refresh-athex
 python -m instrument_registry --refresh-athex-etfs
 python -m instrument_registry --refresh-gleif
 python -m instrument_registry --backup
+python -m instrument_registry --status
 ```
+
+### `--status`
+
+Reports what a cache actually contains and what's missing from it.
+Read-only — it never fetches and never writes, so it's safe to point at a
+deployed cache (`--db-path` to pick one, `--json` for machine-readable
+output). Exits non-zero when something needs a human, so it works as a
+cron or post-deploy check rather than only as something to read.
+
+It exists because *shipping code is not the same as updating the cache*,
+and this package has now hit that twice, in two different shapes:
+`instruments.symbol` sat NULL for weeks because nobody re-ran
+`refresh_athex()`; `refresh_athex_etfs()` shipped and was simply never
+run anywhere, so the cache held zero ETFs and no migration notice could
+have fired. Both were invisible until someone happened to look. So
+`--status` asks, of any cache on any machine, without needing its
+history:
+
+- **has each refresh ever run here?** — answered from the
+  `instrument_type` rows it owns, not from a run-history table, which a
+  restored or copied-down cache would carry over staler than the data
+- **is what it owns complete?** — a row of its type with a NULL column
+  that refresh backfills means the row predates a change and only a
+  re-run fixes it (exactly the `symbol` case)
+- **has a learned table shrunk since the last backup?** — compared
+  against the `row_counts` `--backup` already writes into each
+  snapshot's `MANIFEST.json`. Only the learned tables alarm: `instruments`
+  shrinking is just ATHEX delisting something, while
+  `instrument_aliases`/`lei_blacklist`/`title_isin_exclusions` are
+  recoverable from nowhere. Added after four learned aliases went missing
+  between two backups (restored 2026-08-16) with nothing watching the count.
+
+A NULL `lei` is reported but never counted as a problem — plenty of
+smaller Greek issuers have no registered LEI at all, and `refresh_gleif()`
+re-queries those every run by design.
 
 ## Data sources
 
