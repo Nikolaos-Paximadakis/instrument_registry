@@ -7,8 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Shared reference-data service resolving "is this the same real company/stock?" against
 actual ISO identifiers — ISIN (ISO 6166, instrument) and LEI (ISO 17442, issuing entity)
 — instead of fuzzy-matching free-text titles against each other. Phase 1 is Greek stocks
-only. Used **in-process** by consumers (`pothen_eshes`, an editable `uv` dependency);
-it is not an HTTP service. See README.md for the domain reasoning and the full public API.
+only. Used **in-process** by consumers (`pothen_eshes`, which resolves this package from a
+pinned git revision — see its own `pyproject.toml`); it is not an HTTP service. See
+README.md for the domain reasoning and the full public API.
 
 ## Commands
 
@@ -129,8 +130,18 @@ Standing authorization — no need to ask before each push or merge:
   collector). Don't wait for manual approval on the PR itself.
 - Squash-merge (`gh pr merge --squash`), and delete the branch after
   (`--delete-branch`, or pass both together).
-- This repo has no CI and no branch protection (private, free-tier GitHub) — the test
-  run above *is* the merge gate, so don't skip it.
+- This repo has no CI and no branch protection — the test run above *is* the merge
+  gate, so don't skip it. (The old reason for the gap, that branch protection wasn't
+  available for a private repo on the free tier, expired when this repo went **public
+  on 2026-08-16**; it could be turned on now. Until it is, nothing but that test run
+  stands between a push and `main`.)
+- **This repo is public — anything committed here is world-readable, permanently.**
+  That's deliberate: `pothen_eshes` pins this package by git revision, and while it was
+  private, a consumer running in a sandbox whose credentials were scoped to its own
+  repository couldn't install at all (that project's issue #21). Nothing here is
+  sensitive — public-source reference data plus the code that fetches it — but the bar
+  for a new file is now "would I publish this", not "is this useful". The cache DB in
+  particular stays gitignored, as it always has been.
 - Still ask first for anything actually destructive or hard to reverse — force-push,
   history rewrites, deleting `main`, or anything touching the cache DB per the backup
   rule above. This authorization covers routine push/merge only.
