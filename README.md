@@ -54,7 +54,12 @@ is unverified — nothing to fetch yet either way.
   and a separate upstream feed (`etfs_en.json`) rather than folded into
   `refresh_athex()`, so one failing/being skipped doesn't affect the
   other and `refresh_athex()`'s return value keeps meaning "stocks
-  upserted" for existing callers.
+  upserted" for existing callers. Populates `symbol` like
+  `refresh_athex()` does — it originally didn't (fixed 2026-08-16), so an
+  ETF ticker couldn't be resolved via `lookup_by_symbol()` at all even
+  though `collector/athex.py` had parsed it into `other_names` all along.
+  Re-running the refresh backfills the column on rows written before the
+  fix; the single live ETF row was backfilled the same day.
 - `refresh_gleif(db_path=None) -> GleifRefreshResult` — look up and link the
   LEI for any cached instrument that doesn't have one yet. Returns
   `.linked` and `.skipped_blacklisted`; the second exists because `linked`
@@ -65,7 +70,7 @@ is unverified — nothing to fetch yet either way.
 - `lookup_by_lei(lei, db_path=None) -> Entity | None`
 - `lookup_by_symbol(symbol, db_path=None) -> Instrument | None` — indexed
   exact-match lookup by ATHEX ticker (e.g. `"ETE"`), populated by
-  `refresh_athex()`. The symbol also stays in `other_names` as before
+  `refresh_athex()` and `refresh_athex_etfs()`. The symbol also stays in `other_names` as before
   (fuzzy-matching a bare ticker is unaffected); this is an additive,
   exact-lookup path, unlike going through `fuzzy_match_title*()` to
   resolve a ticker.

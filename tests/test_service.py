@@ -304,6 +304,58 @@ def test_refresh_athex_etfs_upserts_into_instruments_with_etf_type(tmp_path, mon
     assert instrument.source == "athex"
 
 
+def test_refresh_athex_etfs_populates_the_symbol_column(tmp_path, monkeypatch):
+    # refresh_athex() has always written `symbol`; the ETF path shipped
+    # without it, so an ETF ticker was unresolvable via lookup_by_symbol()
+    # even though the collector had parsed it all along.
+    db_path = tmp_path / "registry.db"
+
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_etfs",
+        lambda: [
+            AthexEtf(
+                isin="GRF000153004",
+                symbol="AETF",
+                issuer="ALPHA ASSET MANAGEMENT M.F.M.C.",
+                issuer_full_name="ALPHA ASSET MANAGEMENT MUTUAL FUNDS MANAGEMENT COMPANY S.A.",
+            )
+        ],
+    )
+
+    refresh_athex_etfs(db_path=db_path)
+
+    instrument = lookup_by_symbol("AETF", db_path=db_path)
+    assert instrument is not None
+    assert instrument.isin == "GRF000153004"
+    assert instrument.instrument_type == "etf"
+
+
+def test_refresh_athex_etfs_backfills_the_symbol_of_a_row_that_lacks_one(
+    tmp_path, monkeypatch
+):
+    # The live cache already holds an ETF row written by the pre-fix code,
+    # i.e. with symbol NULL. Re-running the refresh has to fill it in, or
+    # the fix only helps caches that were never refreshed before it.
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRF000153004", name="ALPHA ASSET MANAGEMENT M.F.M.C.")
+
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_etfs",
+        lambda: [
+            AthexEtf(
+                isin="GRF000153004",
+                symbol="AETF",
+                issuer="ALPHA ASSET MANAGEMENT M.F.M.C.",
+                issuer_full_name="ALPHA ASSET MANAGEMENT MUTUAL FUNDS MANAGEMENT COMPANY S.A.",
+            )
+        ],
+    )
+
+    refresh_athex_etfs(db_path=db_path)
+
+    assert lookup_by_isin("GRF000153004", db_path=db_path).symbol == "AETF"
+
+
 def test_refresh_athex_etfs_does_not_clobber_an_existing_lei(tmp_path, monkeypatch):
     db_path = tmp_path / "registry.db"
     _seed_instrument(

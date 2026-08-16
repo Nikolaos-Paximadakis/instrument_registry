@@ -125,7 +125,10 @@ def refresh_athex_etfs(*, db_path: str | Path | None = None) -> int:
     it's a genuinely separate upstream feed (`etfs_en.json` vs
     `stocks_en.json`) — one failing or being skipped shouldn't affect
     the other, and `refresh_athex()`'s return value staying "stocks
-    upserted" avoids a silent meaning change for existing callers."""
+    upserted" avoids a silent meaning change for existing callers.
+
+    Populates `symbol` for the same reason `refresh_athex()` does — an
+    ETF ticker has to be resolvable via `lookup_by_symbol()` too."""
     etfs = fetch_athex_etfs()
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
@@ -137,16 +140,20 @@ def refresh_athex_etfs(*, db_path: str | Path | None = None) -> int:
             connection.execute(
                 """
                 INSERT INTO instruments (
-                    isin, name, other_names, instrument_type, source, updated_at
-                ) VALUES (?, ?, ?, 'etf', 'athex', ?)
+                    isin, name, other_names, instrument_type, source, updated_at, symbol
+                ) VALUES (?, ?, ?, 'etf', 'athex', ?, ?)
                 ON CONFLICT(isin) DO UPDATE SET
                     name = excluded.name,
                     other_names = excluded.other_names,
                     instrument_type = excluded.instrument_type,
                     source = excluded.source,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    symbol = excluded.symbol
                 """,
-                (etf.isin, etf.issuer, json.dumps(other_names, ensure_ascii=False), now),
+                (
+                    etf.isin, etf.issuer, json.dumps(other_names, ensure_ascii=False),
+                    now, etf.symbol,
+                ),
             )
         connection.commit()
     finally:
