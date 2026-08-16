@@ -21,10 +21,14 @@ def main() -> None:
     elif "--backup" in sys.argv:
         from instrument_registry.backup import main as backup_main
         raise SystemExit(backup_main([a for a in sys.argv[1:] if a != "--backup"]))
+    elif "--status" in sys.argv:
+        from instrument_registry.status import main as status_main
+        raise SystemExit(status_main([a for a in sys.argv[1:] if a != "--status"]))
     else:
         raise SystemExit(
             "Usage: python -m instrument_registry "
-            "--refresh-athex | --refresh-athex-etfs | --refresh-gleif | --backup"
+            "--refresh-athex | --refresh-athex-etfs | --refresh-gleif | "
+            "--backup | --status"
         )
 
 
