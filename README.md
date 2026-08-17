@@ -281,9 +281,19 @@ aliases and 0 orphans.
 Note the direction of that failure: the check reports corruption that
 isn't there, and whoever trusts it deletes a legitimate row. A check
 whose false positives are destructive must state its preconditions.
-The same trap catches naive substring tests — `LIKE '%ΡΟΛΙΜΕΝΑΣ%'`
-matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ` it was meant to tell apart from the
-corrupted form. The durable
+
+The same trap catches naive substring tests, and it has a specific fix.
+`LIKE '%ΡΟΛΙΜΕΝΑΣ%'` matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ` it was meant to
+tell apart from the corrupted form; `LIKE '%ΡΙΝΘΟΥ%'` returns three good
+`ΚΟΡΙΝΘΟΥ` rows. **The corruption's signature is the space** — the eaten
+`ΚΟ`/`ΑΕ` leaves one where the intact word has a letter — so anchor on
+it: `'% ΡΟΛΙΜΕΝΑΣ%'` and `'% ΡΙΝΘΟΥ%'` both return 0 on the same
+183-row cache.
+
+Better still, **don't pattern-match for corruption when you can test for
+it**: equality against the known-bad strings returns 0, and a
+reachability sweep returns 0 orphans. Both are immune to this class of
+error; no `LIKE` is. Use a pattern to explore, never to conclude. The durable
 fix is to make deletion an additive fact — a tombstone that merges like
 any other row — which is a schema change and isn't built yet.
 

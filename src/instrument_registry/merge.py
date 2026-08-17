@@ -99,9 +99,21 @@ the same corpus gives 183 aliases and 0 orphans.
 Note which way that fails: the check cries corruption where there is
 none, and a reader who trusts it deletes a legitimate row. A check whose
 false positives are destructive has to state its preconditions rather
-than imply them. The same trap catches naive substring tests — `LIKE
-'%ΡΟΛΙΜΕΝΑΣ%'` matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ` it was meant to
-distinguish from the corrupted form.
+than imply them.
+
+The same trap catches naive substring tests, and it has a specific fix.
+`LIKE '%ΡΟΛΙΜΕΝΑΣ%'` matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ` it was meant to
+distinguish from the corrupted form; `LIKE '%ΡΙΝΘΟΥ%'` returns three
+perfectly good `ΚΟΡΙΝΘΟΥ` rows. **The corruption's signature is the
+space** — the eaten `ΚΟ`/`ΑΕ` leaves one where the intact word has a
+letter — so anchoring on it restores the distinction: `'% ΡΟΛΙΜΕΝΑΣ%'`
+and `'% ΡΙΝΘΟΥ%'` both return 0 against the same 183-row cache.
+
+Better still, **don't pattern-match for corruption when you can test for
+it**. Equality against the known-bad strings returns 0, and a
+reachability sweep over all 183 rows returns 0 orphans; both are immune
+to this whole class of error, which no `LIKE` ever is. Use a pattern to
+explore, never to conclude.
 
 The durable fix is to make deletion an **additive fact** — a tombstone
 written by `remove_alias()`/`unblacklist_lei()`/`remove_title_exclusion()`

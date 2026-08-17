@@ -76,9 +76,20 @@ boilerplate** (`" ".join(title.split())` first). Consumer titles come from PDFs 
 line break can fall mid-phrase or mid-word, so a boilerplate phrase spanning a newline
 survives a strip on one side and not the other — same title, two cores, and a good alias
 looks unreachable. It fails in the destructive direction: it reports corruption that
-isn't there and invites deleting a legitimate row. Same hazard for naive substring
-tests (`LIKE '%ΡΟΛΙΜΕΝΑΣ%'` matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ`). Assume a newline can be
-anywhere in this corpus. `refresh_athex()`'s upsert also deliberately avoids
+isn't there and invites deleting a legitimate row. Assume a newline can be anywhere in
+this corpus.
+
+- **Don't let a containment test stand in for an identity test** — especially in the
+  throwaway query you're using to check whether the reviewed code was right. `LIKE
+  '%ΡΟΛΙΜΕΝΑΣ%'` matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ`; `LIKE '%ΡΙΝΘΟΥ%'` returns three good
+  `ΚΟΡΙΝΘΟΥ` rows. Where a corruption ate `ΚΟ`/`ΑΕ` it left a space, so that space *is*
+  the signature — `'% ΡΙΝΘΟΥ%'` returns 0. Better: test rather than pattern-match.
+  Equality against known-bad strings, or a reachability sweep, is immune to this whole
+  class of error; a `LIKE` never is. Use a pattern to explore, never to conclude. This
+  is `pothen_eshes`'s CODE_REVIEW.md item 14 (added after its issue #32, where a header
+  phrase matched anywhere in a cell made the loans table read through the deposits
+  column map) — worth remembering that verification queries get none of the review that
+  found that bug, while being what decides whether reviewed code is correct. `refresh_athex()`'s upsert also deliberately avoids
 clobbering an existing row's `lei`/`cfi_code`/`currency` back to NULL, since a later step
 fills those in. Before any destructive operation on the cache, back it up first —
 `uv run python -m instrument_registry --backup` (see BACKUP.md).
