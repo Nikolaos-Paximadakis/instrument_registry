@@ -50,7 +50,7 @@ def test_merge_carries_missing_aliases_across(tmp_path):
     add_alias("GRS003003035", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΑΕ", source="shared", db_path=dest)
     add_alias("GRS003003035", "ΔΙΕΘΝΗΣ ΡΟΛΙΜΕΝΑΣ", source="only-in-source", db_path=source)
 
-    report = merge_mod.merge_learned(source, dest)
+    report = merge_mod.merge_learned(source, dest, apply=True)
 
     assert report["tables"]["instrument_aliases"]["added"] == 1
     assert report["tables"]["instrument_aliases"]["already_present"] == 1
@@ -67,7 +67,7 @@ def test_merge_preserves_created_at_rather_than_restamping_it(tmp_path):
     add_alias("GRS003003035", "ΕΘΝΙΚΗ", source="s", db_path=source)
     original = _aliases(source)[("GRS003003035", "ΕΘΝΙΚΗ")]
 
-    merge_mod.merge_learned(source, dest)
+    merge_mod.merge_learned(source, dest, apply=True)
 
     assert _aliases(dest)[("GRS003003035", "ΕΘΝΙΚΗ")] == original
 
@@ -82,7 +82,7 @@ def test_merge_never_deletes_or_overwrites_what_the_destination_had(tmp_path):
     add_alias("GRS003003035", "ONLY IN DEST", source="d", db_path=dest)
     exclude_title_match("GRS003003035", "only in dest", reason="d", db_path=dest)
 
-    merge_mod.merge_learned(source, dest)
+    merge_mod.merge_learned(source, dest, apply=True)
 
     keys = _aliases(dest)
     assert ("GRS003003035", "ONLY IN DEST") in keys
@@ -103,8 +103,8 @@ def test_merge_is_idempotent(tmp_path):
     blacklist_lei("GRS003003035", "5299009N55YRQC69CN08", reason="wrong", db_path=source)
     exclude_title_match("GRS003003035", "quest συμμετοχων", reason="r", db_path=source)
 
-    first = merge_mod.merge_learned(source, dest)
-    second = merge_mod.merge_learned(source, dest)
+    first = merge_mod.merge_learned(source, dest, apply=True)
+    second = merge_mod.merge_learned(source, dest, apply=True)
 
     assert sum(t["added"] for t in first["tables"].values()) == 3
     assert sum(t["added"] for t in second["tables"].values()) == 0
@@ -118,7 +118,7 @@ def test_merge_leaves_upstream_tables_alone(tmp_path):
     _seed_instrument(source, isin="GRS111111111", name="DELISTED CO")
     _seed_instrument(dest)
 
-    merge_mod.merge_learned(source, dest)
+    merge_mod.merge_learned(source, dest, apply=True)
 
     connection = connect(dest)
     try:
@@ -137,7 +137,7 @@ def test_merge_skips_and_reports_a_row_whose_isin_the_destination_lacks(tmp_path
     _seed_instrument(dest)
     add_alias("GRS111111111", "ORPHAN ALIAS", source="s", db_path=source)
 
-    report = merge_mod.merge_learned(source, dest)
+    report = merge_mod.merge_learned(source, dest, apply=True)
 
     aliases = report["tables"]["instrument_aliases"]
     assert aliases["added"] == 0
@@ -155,22 +155,63 @@ def test_blacklist_merges_without_needing_the_instrument(tmp_path):
     _seed_instrument(dest)
     blacklist_lei("GRS111111111", "5299009N55YRQC69CN08", reason="wrong", db_path=source)
 
-    report = merge_mod.merge_learned(source, dest)
+    report = merge_mod.merge_learned(source, dest, apply=True)
 
     assert report["tables"]["lei_blacklist"]["added"] == 1
     assert report["tables"]["lei_blacklist"]["skipped_unknown_isin"] == 0
 
 
-def test_dry_run_reports_without_writing(tmp_path):
+def test_writes_nothing_without_apply(tmp_path):
+    # The default is a preview, because an additive merge cannot carry a
+    # deletion: a row missing from the destination may be one it never
+    # received, or one it deliberately deleted. Nothing here can tell
+    # those apart, so a human reads the list before anything moves.
     source, dest = tmp_path / "source.db", tmp_path / "dest.db"
     for path in (source, dest):
         _seed_instrument(path)
     add_alias("GRS003003035", "ΕΘΝΙΚΗ", source="s", db_path=source)
 
-    report = merge_mod.merge_learned(source, dest, dry_run=True)
+    report = merge_mod.merge_learned(source, dest)
 
+    assert report["applied"] is False
     assert report["tables"]["instrument_aliases"]["added"] == 1
     assert _aliases(dest) == {}
+
+
+def test_main_previews_by_default_and_says_so(tmp_path, capsys):
+    source, dest = tmp_path / "source.db", tmp_path / "dest.db"
+    for path in (source, dest):
+        _seed_instrument(path)
+    add_alias("GRS003003035", "ΕΘΝΙΚΗ", source="s", db_path=source)
+
+    code = merge_mod.main([str(source), "--db-path", str(dest)])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "--apply" in out
+    assert "deliberately deleted" in out
+    assert _aliases(dest) == {}
+
+
+def test_a_row_the_destination_deleted_is_not_silently_reinstated(tmp_path):
+    # The 2026-08-16 incident in miniature. Four aliases were deleted as
+    # corrupted, then re-added from an old backup because a count
+    # comparison read the cleanup as loss. A timestamp heuristic was
+    # tried as the guard and rejected: add_alias() stamps now(), so the
+    # re-added rows were NEWER than everything in the destination and it
+    # fired on 0 of the 4 rows it existed for. What's left is that the
+    # rows are shown and nothing is written without --apply.
+    source, dest = tmp_path / "source.db", tmp_path / "dest.db"
+    for path in (source, dest):
+        _seed_instrument(path)
+    add_alias("GRS003003035", "ΔΙΕΘΝΗΣ ΡΟΛΙΜΕΝΑΣ ΑΘΗΝΩΝ", source="stale", db_path=source)
+    add_alias("GRS003003035", "ΔΙΕΘΝΗΣ ΑΕΡΟΛΙΜΕΝΑΣ ΑΘΗΝΩΝ", source="clean", db_path=dest)
+
+    report = merge_mod.merge_learned(source, dest)
+
+    assert report["tables"]["instrument_aliases"]["added_rows"][0]["alias_text"] == (
+        "ΔΙΕΘΝΗΣ ΡΟΛΙΜΕΝΑΣ ΑΘΗΝΩΝ")
+    assert ("GRS003003035", "ΔΙΕΘΝΗΣ ΡΟΛΙΜΕΝΑΣ ΑΘΗΝΩΝ") not in _aliases(dest)
 
 
 def test_merge_never_modifies_the_source(tmp_path):
@@ -181,7 +222,7 @@ def test_merge_never_modifies_the_source(tmp_path):
     add_alias("GRS003003035", "ONLY IN DEST", source="d", db_path=dest)
     before = source.read_bytes()
 
-    merge_mod.merge_learned(source, dest)
+    merge_mod.merge_learned(source, dest, apply=True)
 
     assert source.read_bytes() == before
 
@@ -196,7 +237,7 @@ def test_a_source_that_is_not_a_registry_cache_is_refused(tmp_path):
     connection.close()
 
     with pytest.raises(ValueError, match="not an instrument_registry cache"):
-        merge_mod.merge_learned(source, dest)
+        merge_mod.merge_learned(source, dest, apply=True)
 
 
 def test_main_reports_a_missing_source_without_traceback(tmp_path, capsys):
@@ -212,7 +253,7 @@ def test_main_emits_json_and_exits_zero(tmp_path, capsys):
         _seed_instrument(path)
     add_alias("GRS003003035", "ΕΘΝΙΚΗ", source="s", db_path=source)
 
-    code = merge_mod.main([str(source), "--db-path", str(dest), "--json"])
+    code = merge_mod.main([str(source), "--db-path", str(dest), "--apply", "--json"])
 
     assert code == 0
     report = json.loads(capsys.readouterr().out)
