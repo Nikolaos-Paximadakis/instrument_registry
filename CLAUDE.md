@@ -69,7 +69,16 @@ deleted on purpose a week earlier. Before restoring or merging any learned row, 
 **reachability**, not counts: does the stored string appear in, or derive from, a real
 title in the consumer's corpus? If nothing can reach it, no lookup can ever hit it and
 its absence is a fix. A timestamp heuristic is not a substitute — it was tried and fired
-on 0 of the 4 rows, because `add_alias()` restamps `created_at` with now(). `refresh_athex()`'s upsert also deliberately avoids
+on 0 of the 4 rows, because `add_alias()` restamps `created_at` with now().
+
+When running that reachability check, **normalize whitespace before stripping
+boilerplate** (`" ".join(title.split())` first). Consumer titles come from PDFs and a
+line break can fall mid-phrase or mid-word, so a boilerplate phrase spanning a newline
+survives a strip on one side and not the other — same title, two cores, and a good alias
+looks unreachable. It fails in the destructive direction: it reports corruption that
+isn't there and invites deleting a legitimate row. Same hazard for naive substring
+tests (`LIKE '%ΡΟΛΙΜΕΝΑΣ%'` matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ`). Assume a newline can be
+anywhere in this corpus. `refresh_athex()`'s upsert also deliberately avoids
 clobbering an existing row's `lei`/`cfi_code`/`currency` back to NULL, since a later step
 fills those in. Before any destructive operation on the cache, back it up first —
 `uv run python -m instrument_registry --backup` (see BACKUP.md).

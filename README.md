@@ -265,7 +265,25 @@ What actually settles such a case is **reachability**: whether the
 stored string appears in, or derives from, any real title in the
 consumer's corpus. A string reachable from nothing can never be matched,
 so its absence is a fix, not a loss. That corpus lives in the consumer,
-so this package can raise the question but not answer it. The durable
+so this package can raise the question but not answer it.
+
+**Reachability has a precondition, and it fails destructively.**
+Normalize whitespace *before* stripping boilerplate — `" ".join(
+title.split())` first, never after. Consumer titles come from PDFs and a
+line break can land anywhere, including mid-word or mid-phrase:
+`MIG ΑΝΩΝΥΜΟΣ\nΕΤΑΙΡΕΙΑ\nΣΥΜΜΕΤΟΧΩΝ (KO)` is a real title. A stripper
+run over the raw string never sees `ΑΝΩΝΥΜΟΣ ΕΤΑΙΡΕΙΑ` as a phrase and
+leaves it in, while the harvest path works from normalized text and
+removes it — same title, two different cores, and a good alias is
+reported unreachable. Normalized first, the same corpus gives 183
+aliases and 0 orphans.
+
+Note the direction of that failure: the check reports corruption that
+isn't there, and whoever trusts it deletes a legitimate row. A check
+whose false positives are destructive must state its preconditions.
+The same trap catches naive substring tests — `LIKE '%ΡΟΛΙΜΕΝΑΣ%'`
+matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ` it was meant to tell apart from the
+corrupted form. The durable
 fix is to make deletion an additive fact — a tombstone that merges like
 any other row — which is a schema change and isn't built yet.
 

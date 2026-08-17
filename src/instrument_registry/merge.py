@@ -85,6 +85,24 @@ string reachable from nothing can never be matched, so its absence is a
 fix rather than a loss. That corpus lives in the consumer, not here, so
 this package can only raise the question, never answer it.
 
+**Reachability has a precondition, and getting it wrong is destructive.**
+Normalize whitespace *before* stripping boilerplate, never after —
+`" ".join(title.split())` first. Consumer titles come out of PDFs and a
+line break can fall anywhere, including inside a word or in the middle
+of a boilerplate phrase. `MIG ΑΝΩΝΥΜΟΣ\nΕΤΑΙΡΕΙΑ\nΣΥΜΜΕΤΟΧΩΝ (KO)` is
+real: a stripper run over the raw string never sees `ΑΝΩΝΥΜΟΣ ΕΤΑΙΡΕΙΑ`
+as a phrase and leaves it in, while the harvest path works from
+already-normalized text and removes it. Same title, two different cores,
+and a perfectly good alias is reported unreachable. Normalizing first,
+the same corpus gives 183 aliases and 0 orphans.
+
+Note which way that fails: the check cries corruption where there is
+none, and a reader who trusts it deletes a legitimate row. A check whose
+false positives are destructive has to state its preconditions rather
+than imply them. The same trap catches naive substring tests — `LIKE
+'%ΡΟΛΙΜΕΝΑΣ%'` matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ` it was meant to
+distinguish from the corrupted form.
+
 The durable fix is to make deletion an **additive fact** — a tombstone
 written by `remove_alias()`/`unblacklist_lei()`/`remove_title_exclusion()`
 that merges in both directions like any other row, so a cleanup survives
