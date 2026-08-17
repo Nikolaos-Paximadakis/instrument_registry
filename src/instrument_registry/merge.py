@@ -38,6 +38,76 @@ both `instrument_aliases` and `title_isin_exclusions` reference
 unreachable by every lookup in the package. That's a signal the
 destination needs a refresh first, so it's reported rather than silently
 dropped — re-run the merge afterwards to pick them up.
+
+## The deletion trap
+
+An additive merge cannot carry a deletion, and that is not a gap to be
+filled — it is a limit worth being loud about. A row present in the
+source and absent from the destination has two completely different
+explanations that look identical from here:
+
+1. the destination never received it, or
+2. the destination *deliberately deleted* it.
+
+Merging is right for (1) and actively destructive for (2): it reinstates
+whatever was cleaned up, and on a deployed copy it does so in
+production. `--dry-run` shows which rows would move but cannot say
+whether they deserve to.
+
+This is not hypothetical. On 2026-08-16 four `instrument_aliases` were
+"restored" into the local cache from an old backup after a count
+comparison read 99→95 as silent loss. They were in fact corrupted
+strings — an unbounded boilerplate regex had stripped `ΚΟ`/`ΑΕ` without
+word boundaries, turning ΑΕΡΟΛΙΜΕΝΑΣ into `ΡΟΛΙΜΕΝΑΣ` and ΧΑΛΚΟΥ into
+`ΧΑΛ Υ` — and had been deliberately deleted from both copies a week
+earlier. A merge in that direction would have put all four back into
+production.
+
+**A timestamp heuristic was tried for this and deliberately rejected.**
+The idea was to flag any source row older than the destination's newest
+row in the same table, on the reasoning that the destination has plainly
+been written since and still doesn't have it. Tested against the real
+incident it fires on **0 of the 4 rows it exists for**: the volume's
+newest alias is 2026-07-19T11:19:53 and the four carry
+2026-08-16T07:28:50, because `add_alias()` stamps `now()` rather than
+preserving a row's origin. The act that creates the hazard is the same
+one that erases the evidence, so the check would have sat silent while
+looking like protection — worse than no check.
+
+So this module does not infer intent from absence. It **reports by
+default and writes only under `--apply`**, which puts a human in front
+of the actual row list before anything moves. That is protection
+proportional to what can honestly be known here.
+
+What settles such a case is *reachability* — whether the stored string
+appears in, or derives from, any real title in the consumer's corpus. A
+string reachable from nothing can never be matched, so its absence is a
+fix rather than a loss. That corpus lives in the consumer, not here, so
+this package can only raise the question, never answer it.
+
+**Reachability has a precondition, and getting it wrong is destructive.**
+Normalize whitespace *before* stripping boilerplate, never after —
+`" ".join(title.split())` first. Consumer titles come out of PDFs and a
+line break can fall anywhere, including inside a word or in the middle
+of a boilerplate phrase. `MIG ΑΝΩΝΥΜΟΣ\nΕΤΑΙΡΕΙΑ\nΣΥΜΜΕΤΟΧΩΝ (KO)` is
+real: a stripper run over the raw string never sees `ΑΝΩΝΥΜΟΣ ΕΤΑΙΡΕΙΑ`
+as a phrase and leaves it in, while the harvest path works from
+already-normalized text and removes it. Same title, two different cores,
+and a perfectly good alias is reported unreachable. Normalizing first,
+the same corpus gives 183 aliases and 0 orphans.
+
+Note which way that fails: the check cries corruption where there is
+none, and a reader who trusts it deletes a legitimate row. A check whose
+false positives are destructive has to state its preconditions rather
+than imply them. The same trap catches naive substring tests — `LIKE
+'%ΡΟΛΙΜΕΝΑΣ%'` matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ` it was meant to
+distinguish from the corrupted form.
+
+The durable fix is to make deletion an **additive fact** — a tombstone
+written by `remove_alias()`/`unblacklist_lei()`/`remove_title_exclusion()`
+that merges in both directions like any other row, so a cleanup survives
+a merge from a stale copy and intent never has to be guessed. That is a
+schema change and is not implemented here yet.
 """
 from __future__ import annotations
 
@@ -73,10 +143,11 @@ def merge_learned(
     source: Path | str,
     db_path: Path | str | None = None,
     *,
-    dry_run: bool = False,
+    apply: bool = False,
 ) -> dict:
     """Merges the three learned tables from `source` into the cache at
-    `db_path`. Returns a report; writes nothing when `dry_run`."""
+    `db_path`. Reports without writing unless `apply` — see "The deletion
+    trap" above for why that's the default."""
     source = Path(source).expanduser()
     if not source.exists():
         raise FileNotFoundError(f"no snapshot at {source}")
@@ -105,7 +176,7 @@ def merge_learned(
             report: dict = {
                 "source": str(source),
                 "destination": str(Path(db_path) if db_path else DEFAULT_DB_PATH),
-                "dry_run": dry_run,
+                "applied": apply,
                 "tables": {},
             }
 
@@ -122,7 +193,7 @@ def merge_learned(
                     if table in NEEDS_INSTRUMENT and row["isin"] not in known_isins:
                         skipped.append(dict(row))
                         continue
-                    if not dry_run:
+                    if apply:
                         dest.execute(
                             f"INSERT INTO {table} ({', '.join(columns)}) "
                             f"VALUES ({', '.join('?' for _ in columns)}) "
@@ -139,7 +210,7 @@ def merge_learned(
                     "skipped_rows": skipped,
                 }
 
-            if not dry_run:
+            if apply:
                 dest.commit()
             return report
         finally:
@@ -153,8 +224,8 @@ def _render(report: dict) -> str:
         f"source:      {report['source']}",
         f"destination: {report['destination']}",
     ]
-    if report["dry_run"]:
-        lines.append("(dry run — nothing was written)")
+    if not report["applied"]:
+        lines.append("(preview — nothing was written; pass --apply to commit)")
     lines.append("")
 
     total_added = total_skipped = 0
@@ -175,12 +246,18 @@ def _render(report: dict) -> str:
             lines.append(f"      ! {row['isin']}  {label}")
 
     lines.append("")
-    verb = "would merge" if report["dry_run"] else "merged"
+    verb = "merged" if report["applied"] else "would merge"
     lines.append(f"{verb} {total_added} learned row(s).")
     if total_skipped:
         lines.append(
             f"{total_skipped} row(s) skipped because the destination has no such "
             "instrument — run the relevant refresh there, then merge again.")
+    if total_added and not report["applied"]:
+        lines.append(
+            "\nCheck these rows before applying. A row missing from the destination "
+            "may be one it never received — or one it deliberately deleted, which an "
+            "additive merge would reinstate. Nothing here can tell those apart; see "
+            "\"The deletion trap\" in merge.py.")
     return "\n".join(lines)
 
 
@@ -189,19 +266,20 @@ def main(argv: list[str] | None = None) -> int:
         description="Merge locally-learned rows (aliases, LEI blacklist, title "
                     "exclusions) from a snapshot into a cache. Additive only: "
                     "never updates or deletes, and never touches instruments/"
-                    "entities.")
+                    "entities. Previews by default — an additive merge cannot "
+                    "carry a deletion, so read the rows before applying.")
     parser.add_argument("source", type=Path,
                         help="snapshot DB to merge FROM (read-only)")
     parser.add_argument("--db-path", type=Path, default=None,
                         help=f"cache to merge INTO (default: {DEFAULT_DB_PATH})")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="report what would be merged, write nothing")
+    parser.add_argument("--apply", action="store_true",
+                        help="actually write. Without this, nothing is committed.")
     parser.add_argument("--json", action="store_true", dest="as_json",
                         help="machine-readable output")
     args = parser.parse_args(argv)
 
     try:
-        report = merge_learned(args.source, args.db_path, dry_run=args.dry_run)
+        report = merge_learned(args.source, args.db_path, apply=args.apply)
     except (FileNotFoundError, ValueError) as exc:
         print(f"instrument_registry.merge: {exc}")
         return 2

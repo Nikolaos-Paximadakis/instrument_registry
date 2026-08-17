@@ -56,8 +56,29 @@ live copy of the cache (there is: this machine's, and `pothen_eshes`'s deployed 
 the left-hand column never needs reconciling because a refresh rebuilds it, and the
 right-hand column can only be reconciled by copying rows across. `--merge-learned`
 (`merge.py`) is that operation — additive only, learned tables only, idempotent,
-`created_at` preserved. Reach for `import_snapshot()` instead only when you mean to
-*replace* a copy wholesale, which discards whatever the destination learned meanwhile. `refresh_athex()`'s upsert also deliberately avoids
+`created_at` preserved, and it **previews unless given `--apply`**. Reach for
+`import_snapshot()` instead only when you mean to *replace* a copy wholesale, which
+discards whatever the destination learned meanwhile.
+
+**A shrunk learned table is not evidence of loss.** It is exactly as consistent with
+"someone deliberately cleaned this up", and row counts cannot tell the two apart. This
+bit for real: on 2026-08-16 four aliases were restored from an old backup on the
+strength of a 99→95 count comparison, when they were in fact corrupted strings
+(`ΑΕΡΟΛΙΜΕΝΑΣ`→`ΡΟΛΙΜΕΝΑΣ`, `ΧΑΛΚΟΥ`→`ΧΑΛ Υ` — an unbounded regex stripping `ΚΟ`/`ΑΕ`)
+deleted on purpose a week earlier. Before restoring or merging any learned row, check
+**reachability**, not counts: does the stored string appear in, or derive from, a real
+title in the consumer's corpus? If nothing can reach it, no lookup can ever hit it and
+its absence is a fix. A timestamp heuristic is not a substitute — it was tried and fired
+on 0 of the 4 rows, because `add_alias()` restamps `created_at` with now().
+
+When running that reachability check, **normalize whitespace before stripping
+boilerplate** (`" ".join(title.split())` first). Consumer titles come from PDFs and a
+line break can fall mid-phrase or mid-word, so a boilerplate phrase spanning a newline
+survives a strip on one side and not the other — same title, two cores, and a good alias
+looks unreachable. It fails in the destructive direction: it reports corruption that
+isn't there and invites deleting a legitimate row. Same hazard for naive substring
+tests (`LIKE '%ΡΟΛΙΜΕΝΑΣ%'` matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ`). Assume a newline can be
+anywhere in this corpus. `refresh_athex()`'s upsert also deliberately avoids
 clobbering an existing row's `lei`/`cfi_code`/`currency` back to NULL, since a later step
 fills those in. Before any destructive operation on the cache, back it up first —
 `uv run python -m instrument_registry --backup` (see BACKUP.md).

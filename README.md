@@ -235,8 +235,57 @@ learned in the meantime. So this is deliberately narrow:
 Rows whose ISIN the destination doesn't have are skipped and reported
 rather than inserted: both alias and exclusion tables reference
 `instruments(isin)`, so such a row would be unreachable by every lookup
-here. Refresh the destination, then merge again. `--dry-run` reports
-without writing; `--db-path` picks the destination.
+here. Refresh the destination, then merge again. `--db-path` picks the
+destination.
+
+**It previews by default and writes only under `--apply`**, because an
+additive merge cannot carry a deletion. A row present in the source and
+missing from the destination has two readings that look identical from
+here — the destination never received it, or the destination
+*deliberately deleted* it — and merging is right for the first and
+destructive for the second.
+
+That is not hypothetical. On 2026-08-16 four aliases were "restored"
+into the local cache from an old backup after a count comparison read
+99→95 as silent loss. They were corrupted strings: an unbounded
+boilerplate regex had stripped `ΚΟ`/`ΑΕ` without word boundaries, so
+ΑΕΡΟΛΙΜΕΝΑΣ became `ΡΟΛΙΜΕΝΑΣ` and ΧΑΛΚΟΥ became `ΧΑΛ Υ`, and they had
+been deliberately deleted from both copies a week earlier. Merging in
+that direction would have put all four back into production.
+
+A timestamp heuristic for this was tried and **rejected**: flagging
+source rows older than the destination's newest row fires on 0 of the 4
+rows it exists for, because `add_alias()` stamps `now()` rather than
+preserving origin — the act that creates the hazard erases the evidence.
+A guard that stays silent while looking like protection is worse than
+none, so the tool reports and lets a human decide instead of inferring
+intent.
+
+What actually settles such a case is **reachability**: whether the
+stored string appears in, or derives from, any real title in the
+consumer's corpus. A string reachable from nothing can never be matched,
+so its absence is a fix, not a loss. That corpus lives in the consumer,
+so this package can raise the question but not answer it.
+
+**Reachability has a precondition, and it fails destructively.**
+Normalize whitespace *before* stripping boilerplate — `" ".join(
+title.split())` first, never after. Consumer titles come from PDFs and a
+line break can land anywhere, including mid-word or mid-phrase:
+`MIG ΑΝΩΝΥΜΟΣ\nΕΤΑΙΡΕΙΑ\nΣΥΜΜΕΤΟΧΩΝ (KO)` is a real title. A stripper
+run over the raw string never sees `ΑΝΩΝΥΜΟΣ ΕΤΑΙΡΕΙΑ` as a phrase and
+leaves it in, while the harvest path works from normalized text and
+removes it — same title, two different cores, and a good alias is
+reported unreachable. Normalized first, the same corpus gives 183
+aliases and 0 orphans.
+
+Note the direction of that failure: the check reports corruption that
+isn't there, and whoever trusts it deletes a legitimate row. A check
+whose false positives are destructive must state its preconditions.
+The same trap catches naive substring tests — `LIKE '%ΡΟΛΙΜΕΝΑΣ%'`
+matches the intact `ΑΕΡΟΛΙΜΕΝΑΣ` it was meant to tell apart from the
+corrupted form. The durable
+fix is to make deletion an additive fact — a tombstone that merges like
+any other row — which is a schema change and isn't built yet.
 
 ### `--status`
 
