@@ -72,10 +72,21 @@ def _sha256(path: Path) -> str:
 
 
 def _git_head(repo_root: Path) -> str | None:
-    completed = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-        capture_output=True, text=True,
-    )
+    # `git_head` is a nice-to-have provenance field, so every way of not
+    # getting one has to degrade to None rather than abort the backup. The
+    # OSError catch is the load-bearing part: with no `git` binary on PATH,
+    # subprocess.run *raises* FileNotFoundError instead of returning a
+    # non-zero returncode, so the check below never runs. That killed
+    # `--backup` outright inside pothen_eshes's deployed container (no git
+    # in the image) — the one cache that had never been backed up at all,
+    # and the only copy of any alias added through that app's own UI.
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True,
+        )
+    except OSError:
+        return None
     return completed.stdout.strip() or None if completed.returncode == 0 else None
 
 

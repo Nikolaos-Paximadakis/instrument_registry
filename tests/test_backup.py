@@ -72,6 +72,29 @@ def test_manifest_records_verifiable_hash_and_row_counts(tmp_path):
     }
 
 
+def test_backup_still_runs_where_there_is_no_git_binary(tmp_path, monkeypatch):
+    # Confirmed live 2026-08-17: `--backup` inside pothen_eshes's deployed
+    # container died with "[Errno 2] No such file or directory: 'git'"
+    # before writing anything. subprocess.run raises rather than returning
+    # a non-zero code when the binary is missing, so the returncode check
+    # in _git_head() never got a look in. Provenance is optional; the
+    # backup is not — least of all on a deployed cache, whose learned rows
+    # exist nowhere else.
+    db_path = tmp_path / "registry.db"
+    _seed_db(db_path)
+
+    def _no_git(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+    monkeypatch.setattr(backup_mod.subprocess, "run", _no_git)
+
+    manifest = backup_mod.backup(root=tmp_path / "dest", db_path=db_path)
+
+    assert manifest["git_head"] is None
+    assert manifest["snapshot"]["instrument_registry.db"]["integrity"] == "ok"
+    assert manifest["snapshot"]["instrument_registry.db"]["row_counts"]["instrument_aliases"] == 1
+
+
 def test_missing_source_is_skipped_not_fatal(tmp_path):
     manifest = backup_mod.backup(root=tmp_path / "dest", db_path=tmp_path / "nonexistent.db")
 

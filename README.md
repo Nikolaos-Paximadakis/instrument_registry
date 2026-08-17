@@ -190,7 +190,11 @@ first, so it's a no-op on a DB that's already current. This is how
 cache to be manually altered.
 
 **Back it up**: `uv run python -m instrument_registry --backup` — see
-BACKUP.md for what's backed up, where, and how to restore.
+BACKUP.md for what's backed up, where, and how to restore. It runs
+against a *deployed* cache too (`--root` a path on the persistent
+volume); the manifest's `git_head` is best-effort and comes back null
+where there's no `git` binary, rather than aborting the backup, which is
+what it did until 2026-08-17.
 
 ## CLI
 

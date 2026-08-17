@@ -64,6 +64,25 @@ learned state back down (see README's Public Service API); nothing pulls
 it automatically or on a schedule. A local backup here is only ever a
 backup of what this machine's copy currently holds.
 
+**You can back up a deployed cache in place**, which is usually easier
+than getting its bytes down: `--backup` resolves the same
+`XDG_DATA_HOME` default the app itself uses, so running it *inside* that
+environment snapshots the copy that's actually live. Point `--root` at a
+path on the persistent volume, not the container filesystem, or the
+snapshot dies with the machine:
+
+```
+python -m instrument_registry --backup --root /data/registry-data/backup
+```
+
+That failed outright until 2026-08-17 — the manifest's `git_head` field
+shelled out to `git`, which isn't in a deployed image, and a missing
+binary raises rather than returning non-zero, so the whole backup aborted
+before writing anything. Provenance is now best-effort (`git_head: null`)
+and the backup runs. Worth knowing when reading an old manifest: a null
+`git_head` means "taken somewhere without git", not "taken from a dirty
+tree".
+
 ## Restoring
 
 - Copy the snapshot's `instrument_registry.db` to the real `db_path`
