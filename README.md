@@ -204,7 +204,39 @@ python -m instrument_registry --refresh-athex-etfs
 python -m instrument_registry --refresh-gleif
 python -m instrument_registry --backup
 python -m instrument_registry --status
+python -m instrument_registry --merge-learned <snapshot.db>
 ```
+
+### `--merge-learned`
+
+Copies locally-learned rows (`instrument_aliases`, `lei_blacklist`,
+`title_isin_exclusions`) from a snapshot into a cache. Exists because
+there is more than one live copy of this database — this machine's, and
+`pothen_eshes`'s deployed volume — and only these three tables can drift
+in a way no refresh can repair.
+
+`export_snapshot()`/`import_snapshot()` already move a *whole* database,
+which is the wrong tool for reconciling two live copies: importing to
+carry four aliases across also discards everything the destination
+learned in the meantime. So this is deliberately narrow:
+
+- **additive only** — inserts, never updates, never deletes, so a merge
+  cannot lose data on either side and is safe against a live cache
+- **learned tables only** — `instruments`/`entities` are left alone even
+  where the source has more of them; those come from a refresh, and
+  seeding them from a stale snapshot plants rows upstream no longer agrees
+  with
+- **idempotent**, on each table's natural key
+- **provenance preserved** — `created_at` is carried across verbatim, not
+  restamped. A restore that rewrites it destroys the only evidence that
+  dates a loss, which is precisely what made the 2026-08-16 alias loss so
+  hard to place
+
+Rows whose ISIN the destination doesn't have are skipped and reported
+rather than inserted: both alias and exclusion tables reference
+`instruments(isin)`, so such a row would be unreachable by every lookup
+here. Refresh the destination, then merge again. `--dry-run` reports
+without writing; `--db-path` picks the destination.
 
 ### `--status`
 

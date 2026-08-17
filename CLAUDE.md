@@ -22,6 +22,7 @@ python -m instrument_registry --refresh-athex     # fetch + upsert ATHEX's stock
 python -m instrument_registry --refresh-gleif     # link LEIs for instruments missing one
 python -m instrument_registry --backup            # back up the local cache DB (see BACKUP.md)
 python -m instrument_registry --status            # read-only: what's in a cache, what's missing
+python -m instrument_registry --merge-learned <snapshot.db>   # reconcile two copies' learned rows
 ```
 
 No linter or formatter is configured — don't introduce one without asking.
@@ -50,7 +51,13 @@ The five tables split into two categories, and conflating them causes real data 
 | rebuilt any time by `refresh_*()` | recoverable from no external source |
 
 `refresh_athex()`/`refresh_gleif()` must never write to the right-hand column — that's
-what makes a refresh safe to re-run. `refresh_athex()`'s upsert also deliberately avoids
+what makes a refresh safe to re-run. The corollary bites when there is more than one
+live copy of the cache (there is: this machine's, and `pothen_eshes`'s deployed volume):
+the left-hand column never needs reconciling because a refresh rebuilds it, and the
+right-hand column can only be reconciled by copying rows across. `--merge-learned`
+(`merge.py`) is that operation — additive only, learned tables only, idempotent,
+`created_at` preserved. Reach for `import_snapshot()` instead only when you mean to
+*replace* a copy wholesale, which discards whatever the destination learned meanwhile. `refresh_athex()`'s upsert also deliberately avoids
 clobbering an existing row's `lei`/`cfi_code`/`currency` back to NULL, since a later step
 fills those in. Before any destructive operation on the cache, back it up first —
 `uv run python -m instrument_registry --backup` (see BACKUP.md).
