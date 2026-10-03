@@ -11,6 +11,7 @@ particular database rather than in the code.
 from __future__ import annotations
 
 import json
+import sqlite3
 
 from instrument_registry import backup as backup_mod
 from instrument_registry import status as status_mod
@@ -18,13 +19,16 @@ from instrument_registry.db.session import connect
 from instrument_registry.service import add_alias
 
 
-def _seed(db_path, *, instrument_type="stock", isin="GRS003003035", symbol="ETE"):
+def _seed(
+    db_path, *, instrument_type="stock", isin="GRS003003035", symbol="ETE",
+    last_seen_in_feed="2026-01-01T00:00:00+00:00",
+):
     connection = connect(db_path)
     connection.execute(
         "INSERT INTO instruments (isin, name, other_names, instrument_type, source, "
-        "updated_at, symbol) VALUES (?, 'NAT. BANK OF GREECE SA', '[]', ?, 'athex', "
-        "'2026-01-01T00:00:00+00:00', ?)",
-        (isin, instrument_type, symbol),
+        "updated_at, symbol, last_seen_in_feed) VALUES (?, 'NAT. BANK OF GREECE SA', "
+        "'[]', ?, 'athex', '2026-01-01T00:00:00+00:00', ?, ?)",
+        (isin, instrument_type, symbol, last_seen_in_feed),
     )
     connection.commit()
     connection.close()
@@ -180,3 +184,64 @@ def test_main_exits_zero_and_can_emit_json(tmp_path, capsys):
 
     assert code == 0
     assert json.loads(capsys.readouterr().out)["problems"] == []
+
+
+def test_status_reports_feed_membership_that_was_never_recorded(tmp_path):
+    # Rows written before last_seen_in_feed existed. Every run without it
+    # is a run whose delistings lose their date, so it is a problem until
+    # a refresh has stamped something.
+    db_path = tmp_path / "registry.db"
+    _seed(db_path, last_seen_in_feed=None)
+    _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
+
+    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "nowhere")
+
+    stocks = next(r for r in report["refreshes"] if r["instrument_type"] == "stock")
+    assert stocks["state"] == "needs re-run"
+    assert stocks["last_feed"] is None
+    assert any(
+        "feed membership has never been recorded for 'stock'" in p
+        for p in report["problems"]
+    )
+    etfs = next(r for r in report["refreshes"] if r["instrument_type"] == "etf")
+    assert etfs["state"] == "ok"
+
+
+def test_status_counts_rows_no_longer_in_the_feed_without_calling_it_a_problem(tmp_path):
+    # A delisting is the column doing its job. Both shapes count: a row
+    # last seen by an earlier run, and one never seen since tracking began.
+    db_path = tmp_path / "registry.db"
+    _seed(db_path, last_seen_in_feed="2026-09-01T00:00:00+00:00")
+    _seed(db_path, isin="GRS111111111", symbol="OLD",
+          last_seen_in_feed="2026-08-01T00:00:00+00:00")
+    _seed(db_path, isin="GRS222222222", symbol="OLDER", last_seen_in_feed=None)
+    _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
+    backup_mod.backup(root=tmp_path / "dest", db_path=db_path, keep=30)
+
+    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "dest")
+
+    stocks = next(r for r in report["refreshes"] if r["instrument_type"] == "stock")
+    assert stocks["not_in_latest_feed"] == 2
+    assert stocks["state"] == "ok"
+    assert report["problems"] == []
+    assert "2 no longer in the feed" in status_mod._format(report)
+
+
+def test_status_reads_a_cache_that_predates_the_column_without_migrating_it(tmp_path):
+    # --status opens read-only, so it cannot run the ALTER connect() would.
+    # A deployed cache older than the column must still be readable.
+    db_path = tmp_path / "registry.db"
+    _seed(db_path)
+    _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
+    raw = sqlite3.connect(db_path)
+    raw.execute("ALTER TABLE instruments DROP COLUMN last_seen_in_feed")
+    raw.commit()
+    raw.close()
+
+    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "nowhere")
+
+    assert all(r["state"] == "needs re-run" for r in report["refreshes"])
+    raw = sqlite3.connect(db_path)
+    columns = {r[1] for r in raw.execute("PRAGMA table_info(instruments)")}
+    raw.close()
+    assert "last_seen_in_feed" not in columns

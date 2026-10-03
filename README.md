@@ -46,8 +46,25 @@ is unverified — nothing to fetch yet either way.
 
 ## Public Service API
 
-- `refresh_athex(db_path=None) -> int` — fetch + upsert ATHEX's current
-  stock list. Safe to re-run.
+- `refresh_athex(db_path=None, allow_drop=False) -> int` — fetch + upsert
+  ATHEX's current stock list. Safe to re-run. Stamps
+  `instruments.last_seen_in_feed` on every stock in the feed and never
+  deletes one that is missing, so a delisted company keeps its row, its
+  ISIN and the date it was last listed (#24). That date matters because
+  this cache is the only free source of a delisted security's ISIN: the
+  Euronext delisted-issuers archive has almost none, and once a company
+  leaves the feed nothing else serves its code. **It cannot recover the
+  past** — tracking began 2026-10-03, so a row that left before then has
+  `last_seen_in_feed` NULL and only `updated_at` to bound when (the
+  first tracked refresh found ALPHA TRUST HOLDINGS, `GRS504003021`,
+  already gone since the 2026-08-30 refresh).
+  Membership is inferred from absence, so a truncated or empty response
+  would read as a mass delisting. The refresh therefore raises
+  `FeedShrinkError`, writing nothing, on an empty payload or one
+  missing more than `MAX_DROPPED_FRACTION` (20%) of the stocks the
+  previous run saw; `allow_drop=True` (`--allow-drop`) accepts it once
+  confirmed against ATHEX. The baseline is the previous run's set, so a
+  delisting is counted once, by the run that first misses it.
 - `refresh_athex_etfs(db_path=None) -> int` — fetch + upsert ATHEX's
   current ETF list (`instrument_type='etf'`). Same safe-to-re-run
   upsert semantics as `refresh_athex()`, kept as a separate function
@@ -60,6 +77,10 @@ is unverified — nothing to fetch yet either way.
   though `collector/athex.py` had parsed it into `other_names` all along.
   Re-running the refresh backfills the column on rows written before the
   fix; the single live ETF row was backfilled the same day.
+  Feed membership is tracked and guarded the same way, for ETFs only:
+  neither refresh judges the other's rows, since it never saw that feed.
+  With one ETF listed, its delisting is an empty payload, which always
+  needs `allow_drop`.
 - `refresh_gleif(db_path=None) -> GleifRefreshResult` — look up and link the
   LEI for any cached instrument that doesn't have one yet. Returns
   `.linked` and `.skipped_blacklisted`; the second exists because `linked`
@@ -199,7 +220,7 @@ what it did until 2026-08-17.
 ## CLI
 
 ```bash
-python -m instrument_registry --refresh-athex
+python -m instrument_registry --refresh-athex          # [--allow-drop], see refresh_athex()
 python -m instrument_registry --refresh-athex-etfs
 python -m instrument_registry --refresh-gleif
 python -m instrument_registry --backup
@@ -320,6 +341,14 @@ history:
 - **is what it owns complete?** — a row of its type with a NULL column
   that refresh backfills means the row predates a change and only a
   re-run fixes it (exactly the `symbol` case)
+- **has feed membership ever been recorded?** — a type whose rows all
+  have `last_seen_in_feed` NULL is a problem until a refresh stamps
+  them, since every run without it loses the date of whatever delists
+  meanwhile. Rows no longer in the latest feed are counted
+  (`not_in_latest_feed`) but are never a problem: that is the column
+  doing its job. It is deliberately not a backfill column, because a row
+  that left before tracking began stays NULL for good. A cache that
+  predates the column is read without migrating it.
 - **has a learned table shrunk since the last backup?** — compared
   against the `row_counts` `--backup` already writes into each
   snapshot's `MANIFEST.json`. Only the learned tables alarm: `instruments`

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from instrument_registry.collector.athex import AthexEtf, AthexStock
 from instrument_registry.collector.gleif import GleifEntity
 from instrument_registry.db.session import connect
 from instrument_registry.service import (
+    FeedShrinkError,
     add_alias,
     blacklist_lei,
     exclude_title_match,
@@ -878,3 +881,172 @@ def test_import_snapshot_overwrite_true_replaces_existing_data(tmp_path):
     instrument = lookup_by_isin("GRS003003035", db_path=target_path)
     assert instrument is not None
     assert instrument.name == "NEW DATA"
+
+
+def _stock(isin, symbol="X"):
+    return AthexStock(
+        isin=isin, symbol=symbol, issuer=f"ISSUER {symbol}",
+        issuer_full_name=f"ISSUER {symbol} S.A.", market="SECURITIES MARKET",
+    )
+
+
+def _feed_column(db_path, column="last_seen_in_feed"):
+    connection = connect(db_path)
+    try:
+        return {
+            row["isin"]: row[column]
+            for row in connection.execute(f"SELECT isin, {column} FROM instruments")
+        }
+    finally:
+        connection.close()
+
+
+def _stocks_feed(monkeypatch, stocks):
+    monkeypatch.setattr("instrument_registry.service.fetch_athex_stocks", lambda: stocks)
+
+
+TEN = [f"GRS0000000{n:02d}" for n in range(10)]
+
+
+def test_refresh_athex_stamps_what_it_saw_and_keeps_what_it_did_not(tmp_path, monkeypatch):
+    # The point of #24: a company that leaves the feed keeps its row, its
+    # ISIN and the date it was last listed.
+    db_path = tmp_path / "registry.db"
+    _stocks_feed(monkeypatch, [_stock(isin) for isin in TEN])
+    refresh_athex(db_path=db_path)
+    first = _feed_column(db_path)
+    assert len(set(first.values())) == 1 and None not in first.values()
+
+    _stocks_feed(monkeypatch, [_stock(isin) for isin in TEN[1:]])
+    refresh_athex(db_path=db_path)
+
+    second = _feed_column(db_path)
+    assert second[TEN[0]] == first[TEN[0]]
+    assert all(second[isin] > first[isin] for isin in TEN[1:])
+    assert lookup_by_isin(TEN[0], db_path=db_path).last_seen_in_feed == first[TEN[0]]
+
+
+def test_refresh_athex_never_judges_an_etf(tmp_path, monkeypatch):
+    # The stocks feed contains no ETFs; reading their absence from it as a
+    # delisting would be wrong for every ETF on every run.
+    db_path = tmp_path / "registry.db"
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_etfs",
+        lambda: [AthexEtf(isin="GRF000153004", symbol="AETF", issuer="A", issuer_full_name="A")],
+    )
+    refresh_athex_etfs(db_path=db_path)
+    etf_seen = _feed_column(db_path)["GRF000153004"]
+    _stocks_feed(monkeypatch, [_stock(TEN[0])])
+
+    refresh_athex(db_path=db_path)
+
+    assert _feed_column(db_path)["GRF000153004"] == etf_seen
+    assert _feed_column(db_path, "instrument_type")["GRF000153004"] == "etf"
+
+
+def test_refresh_athex_refuses_an_empty_feed_and_writes_nothing(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _stocks_feed(monkeypatch, [_stock(isin) for isin in TEN])
+    refresh_athex(db_path=db_path)
+    before = _feed_column(db_path)
+    _stocks_feed(monkeypatch, [])
+
+    with pytest.raises(FeedShrinkError, match="no rows"):
+        refresh_athex(db_path=db_path)
+
+    assert _feed_column(db_path) == before
+
+
+def test_refresh_athex_refuses_an_empty_feed_even_into_an_empty_cache(tmp_path, monkeypatch):
+    # No baseline to compare against, and still not an answer.
+    _stocks_feed(monkeypatch, [])
+
+    with pytest.raises(FeedShrinkError):
+        refresh_athex(db_path=tmp_path / "registry.db")
+
+
+def test_refresh_athex_refuses_a_partial_feed_and_writes_nothing(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _stocks_feed(monkeypatch, [_stock(isin) for isin in TEN])
+    refresh_athex(db_path=db_path)
+    before = _feed_column(db_path)
+    names_before = _feed_column(db_path, "name")
+    _stocks_feed(monkeypatch, [_stock(isin, symbol="NEW") for isin in TEN[3:]])
+
+    with pytest.raises(FeedShrinkError, match="omits 3 of the 10"):
+        refresh_athex(db_path=db_path)
+
+    assert _feed_column(db_path) == before
+    assert _feed_column(db_path, "name") == names_before
+
+
+def test_refresh_athex_allow_drop_accepts_a_confirmed_large_drop(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _stocks_feed(monkeypatch, [_stock(isin) for isin in TEN])
+    refresh_athex(db_path=db_path)
+    before = _feed_column(db_path)
+    _stocks_feed(monkeypatch, [_stock(isin) for isin in TEN[3:]])
+
+    refresh_athex(db_path=db_path, allow_drop=True)
+
+    after = _feed_column(db_path)
+    assert [after[isin] == before[isin] for isin in TEN] == [True] * 3 + [False] * 7
+
+
+def test_refresh_athex_counts_a_delisting_once(tmp_path, monkeypatch):
+    # The baseline is what the previous run saw. Measured against every
+    # row ever stored instead, the two already-gone stocks would count
+    # again and push one ordinary delisting over the threshold.
+    db_path = tmp_path / "registry.db"
+    _stocks_feed(monkeypatch, [_stock(isin) for isin in TEN])
+    refresh_athex(db_path=db_path)
+    _stocks_feed(monkeypatch, [_stock(isin) for isin in TEN[2:]])
+    refresh_athex(db_path=db_path)  # 2 of 10: at the threshold, allowed
+    _stocks_feed(monkeypatch, [_stock(isin) for isin in TEN[3:]])
+
+    refresh_athex(db_path=db_path)  # 1 of 8
+
+    assert lookup_by_isin(TEN[2], db_path=db_path).last_seen_in_feed is not None
+
+
+def test_refresh_athex_measures_a_pre_tracking_cache_against_every_stored_stock(
+    tmp_path, monkeypatch
+):
+    # The first run after the migration has no stamps to compare against,
+    # and a truncated payload then must still be refused.
+    db_path = tmp_path / "registry.db"
+    for isin in TEN:
+        _seed_instrument(db_path, isin=isin, name=isin)
+    _stocks_feed(monkeypatch, [_stock(TEN[0])])
+
+    with pytest.raises(FeedShrinkError, match="omits 9 of the 10"):
+        refresh_athex(db_path=db_path)
+
+
+def test_refresh_athex_etfs_refuses_an_empty_feed(tmp_path, monkeypatch):
+    # With one ETF listed, its delisting looks exactly like a failed fetch.
+    db_path = tmp_path / "registry.db"
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_etfs",
+        lambda: [AthexEtf(isin="GRF000153004", symbol="AETF", issuer="A", issuer_full_name="A")],
+    )
+    refresh_athex_etfs(db_path=db_path)
+    monkeypatch.setattr("instrument_registry.service.fetch_athex_etfs", lambda: [])
+
+    with pytest.raises(FeedShrinkError):
+        refresh_athex_etfs(db_path=db_path)
+
+
+def test_connect_adds_last_seen_in_feed_to_an_existing_cache_and_says_so(tmp_path, capsys):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin=TEN[0], name="A")
+    raw = sqlite3.connect(db_path)
+    raw.execute("ALTER TABLE instruments DROP COLUMN last_seen_in_feed")
+    raw.commit()
+    raw.close()
+    capsys.readouterr()
+
+    connect(db_path).close()
+
+    assert "instruments.last_seen_in_feed" in capsys.readouterr().err
+    assert lookup_by_isin(TEN[0], db_path=db_path).last_seen_in_feed is None

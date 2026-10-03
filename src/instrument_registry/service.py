@@ -12,7 +12,12 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from instrument_registry.collector.athex import fetch_athex_etfs, fetch_athex_stocks
+from instrument_registry.collector.athex import (
+    AthexEtf,
+    AthexStock,
+    fetch_athex_etfs,
+    fetch_athex_stocks,
+)
 from instrument_registry.collector.gleif import lookup_lei_by_isin
 from instrument_registry.db.session import connect
 
@@ -28,6 +33,8 @@ class Instrument:
     lei: str | None
     source: str
     symbol: str | None
+    #: See `instruments.last_seen_in_feed` in db/models.py.
+    last_seen_in_feed: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +81,23 @@ class GleifRefreshResult:
     skipped_blacklisted: int
 
 
-def refresh_athex(*, db_path: str | Path | None = None) -> int:
+class FeedShrinkError(RuntimeError):
+    """A refresh refused a payload that would read as a mass delisting.
+
+    Feed membership is inferred from absence, so a truncated or empty
+    response is indistinguishable from "these companies left the
+    exchange" — and the failure would be silent and total. Raised before
+    anything is written; pass `allow_drop=True` (`--allow-drop`) once the
+    drop has been confirmed against ATHEX itself."""
+
+
+#: The largest share of the rows the previous run saw that one refresh may
+#: report as gone. ATHEX lists ~150 stocks and loses about a dozen a year,
+#: so a refresh skipped for a whole year stays well under it.
+MAX_DROPPED_FRACTION = 0.2
+
+
+def refresh_athex(*, db_path: str | Path | None = None, allow_drop: bool = False) -> int:
     """Fetch ATHEX's current listed-stocks list and upsert into
     `instruments`. Safe to re-run: an existing row's `lei`/`cfi_code`/
     `currency` (filled in by a later step, e.g. `refresh_gleif()`) is
@@ -84,40 +107,19 @@ def refresh_athex(*, db_path: str | Path | None = None) -> int:
     'stock' rather than left NULL. `symbol` also stays in `other_names`
     (as before) so fuzzy matching against a bare ticker is unaffected —
     the dedicated column is additive, for an exact indexed lookup via
-    `lookup_by_symbol()`."""
+    `lookup_by_symbol()`.
+
+    Stamps `last_seen_in_feed` on every stock in the payload. A stock it
+    does not contain is left exactly as it was — never deleted — so a
+    delisted company keeps its ISIN and its stamp says when it was last
+    listed. Raises `FeedShrinkError`, writing nothing, on an empty payload
+    or one missing more than `MAX_DROPPED_FRACTION` of the stocks the
+    previous run saw, unless `allow_drop=True`."""
     stocks = fetch_athex_stocks()
-    now = datetime.now(UTC).isoformat()
-    connection = connect(db_path)
-    try:
-        for stock in stocks:
-            other_names = sorted(
-                {stock.symbol, stock.issuer_full_name} - {stock.issuer}
-            )
-            connection.execute(
-                """
-                INSERT INTO instruments (
-                    isin, name, other_names, instrument_type, source, updated_at, symbol
-                ) VALUES (?, ?, ?, 'stock', 'athex', ?, ?)
-                ON CONFLICT(isin) DO UPDATE SET
-                    name = excluded.name,
-                    other_names = excluded.other_names,
-                    instrument_type = excluded.instrument_type,
-                    source = excluded.source,
-                    updated_at = excluded.updated_at,
-                    symbol = excluded.symbol
-                """,
-                (
-                    stock.isin, stock.issuer, json.dumps(other_names, ensure_ascii=False),
-                    now, stock.symbol,
-                ),
-            )
-        connection.commit()
-    finally:
-        connection.close()
-    return len(stocks)
+    return _upsert_feed(stocks, "stock", db_path=db_path, allow_drop=allow_drop)
 
 
-def refresh_athex_etfs(*, db_path: str | Path | None = None) -> int:
+def refresh_athex_etfs(*, db_path: str | Path | None = None, allow_drop: bool = False) -> int:
     """Fetch ATHEX's current listed-ETFs list and upsert into
     `instruments`, same upsert semantics as `refresh_athex()` (never
     clobbers `lei`/`cfi_code`/`currency`) but `instrument_type='etf'`. A
@@ -128,37 +130,95 @@ def refresh_athex_etfs(*, db_path: str | Path | None = None) -> int:
     upserted" avoids a silent meaning change for existing callers.
 
     Populates `symbol` for the same reason `refresh_athex()` does — an
-    ETF ticker has to be resolvable via `lookup_by_symbol()` too."""
+    ETF ticker has to be resolvable via `lookup_by_symbol()` too.
+
+    Feed membership is tracked and guarded exactly as in
+    `refresh_athex()`, and only for ETFs: neither refresh judges a row of
+    the other's type, since it never saw that feed. With one ETF listed,
+    its delisting is an empty payload, which always needs `allow_drop`."""
     etfs = fetch_athex_etfs()
+    return _upsert_feed(etfs, "etf", db_path=db_path, allow_drop=allow_drop)
+
+
+def _upsert_feed(
+    products: list[AthexStock] | list[AthexEtf],
+    instrument_type: str,
+    *,
+    db_path: str | Path | None,
+    allow_drop: bool,
+) -> int:
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
     try:
-        for etf in etfs:
+        if not allow_drop:
+            _refuse_a_shrunk_feed(connection, products, instrument_type)
+        for product in products:
             other_names = sorted(
-                {etf.symbol, etf.issuer_full_name} - {etf.issuer}
+                {product.symbol, product.issuer_full_name} - {product.issuer}
             )
             connection.execute(
                 """
                 INSERT INTO instruments (
-                    isin, name, other_names, instrument_type, source, updated_at, symbol
-                ) VALUES (?, ?, ?, 'etf', 'athex', ?, ?)
+                    isin, name, other_names, instrument_type, source, updated_at, symbol,
+                    last_seen_in_feed
+                ) VALUES (?, ?, ?, ?, 'athex', ?, ?, ?)
                 ON CONFLICT(isin) DO UPDATE SET
                     name = excluded.name,
                     other_names = excluded.other_names,
                     instrument_type = excluded.instrument_type,
                     source = excluded.source,
                     updated_at = excluded.updated_at,
-                    symbol = excluded.symbol
+                    symbol = excluded.symbol,
+                    last_seen_in_feed = excluded.last_seen_in_feed
                 """,
                 (
-                    etf.isin, etf.issuer, json.dumps(other_names, ensure_ascii=False),
-                    now, etf.symbol,
+                    product.isin, product.issuer,
+                    json.dumps(other_names, ensure_ascii=False),
+                    instrument_type, now, product.symbol, now,
                 ),
             )
         connection.commit()
     finally:
         connection.close()
-    return len(etfs)
+    return len(products)
+
+
+def _refuse_a_shrunk_feed(
+    connection: sqlite3.Connection,
+    products: list[AthexStock] | list[AthexEtf],
+    instrument_type: str,
+) -> None:
+    """The baseline is the set the previous run of this type saw (its
+    newest stamp), or every row of the type before tracking began. Rows
+    that left the feed in some earlier run are not in it, so a delisting
+    is counted once, by the run that first misses it."""
+    if not products:
+        raise FeedShrinkError(
+            f"ATHEX's {instrument_type} feed returned no rows; refusing to treat "
+            "that as every listed instrument having gone"
+        )
+    latest = connection.execute(
+        "SELECT MAX(last_seen_in_feed) FROM instruments WHERE instrument_type = ?",
+        (instrument_type,),
+    ).fetchone()[0]
+    if latest is None:
+        rows = connection.execute(
+            "SELECT isin FROM instruments WHERE instrument_type = ?", (instrument_type,)
+        )
+    else:
+        rows = connection.execute(
+            "SELECT isin FROM instruments WHERE instrument_type = ? AND last_seen_in_feed = ?",
+            (instrument_type, latest),
+        )
+    baseline = {row[0] for row in rows}
+    dropped = baseline - {product.isin for product in products}
+    if baseline and len(dropped) > MAX_DROPPED_FRACTION * len(baseline):
+        raise FeedShrinkError(
+            f"ATHEX's {instrument_type} feed omits {len(dropped)} of the "
+            f"{len(baseline)} rows the previous run saw (more than "
+            f"{MAX_DROPPED_FRACTION:.0%}); refusing to record them all as gone. "
+            "Check the feed, then re-run with allow_drop=True (--allow-drop)"
+        )
 
 
 def refresh_gleif(*, db_path: str | Path | None = None) -> GleifRefreshResult:
@@ -692,6 +752,7 @@ def _row_to_instrument(row) -> Instrument:
         lei=row["lei"],
         source=row["source"],
         symbol=row["symbol"],
+        last_seen_in_feed=row["last_seen_in_feed"],
     )
 
 
