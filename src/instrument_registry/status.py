@@ -126,6 +126,9 @@ def status(
         }
 
         report["refreshes"] = []
+        has_feed_column = "last_seen_in_feed" in {
+            r[1] for r in connection.execute("PRAGMA table_info(instruments)")
+        }
         for refresh in REFRESHES:
             row = connection.execute(
                 "SELECT COUNT(*) AS rows, MAX(updated_at) AS last_updated "
@@ -140,25 +143,49 @@ def status(
                 ).fetchone()[0]
                 for column in refresh["backfills"]
             }
+            # Feed membership is deliberately not a `backfills` column: a
+            # row that left the feed before tracking began stays NULL for
+            # good, which is not something a re-run can fix. What a re-run
+            # does fix is tracking never having started at all.
+            # Read-only, so a cache that predates the column is reported
+            # rather than migrated; any refresh's connect() adds it.
+            latest_feed = connection.execute(
+                "SELECT MAX(last_seen_in_feed) FROM instruments WHERE instrument_type = ?",
+                (refresh["instrument_type"],),
+            ).fetchone()[0] if has_feed_column else None
+            not_in_latest_feed = connection.execute(
+                "SELECT COUNT(*) FROM instruments WHERE instrument_type = ? "
+                "AND (last_seen_in_feed IS NULL OR last_seen_in_feed < ?)",
+                (refresh["instrument_type"], latest_feed),
+            ).fetchone()[0] if latest_feed is not None else None
             entry = {
                 "command": refresh["command"],
                 "instrument_type": refresh["instrument_type"],
                 "rows": row["rows"],
                 "last_updated": row["last_updated"],
                 "missing": {c: n for c, n in missing.items() if n},
+                "last_feed": latest_feed,
+                "not_in_latest_feed": not_in_latest_feed,
             }
+            untracked = bool(entry["rows"]) and latest_feed is None
             if not entry["rows"]:
                 entry["state"] = "never run here"
                 report["problems"].append(
                     f"{refresh['command']} has never been run against this cache "
                     f"(no '{refresh['instrument_type']}' rows)"
                 )
-            elif entry["missing"]:
+            elif entry["missing"] or untracked:
                 entry["state"] = "needs re-run"
                 for column, count in entry["missing"].items():
                     report["problems"].append(
                         f"{count} '{refresh['instrument_type']}' row(s) have a NULL "
                         f"{column}; re-run {refresh['command']} to backfill"
+                    )
+                if untracked:
+                    report["problems"].append(
+                        f"feed membership has never been recorded for "
+                        f"'{refresh['instrument_type']}' rows; re-run "
+                        f"{refresh['command']} so a later delisting keeps its date"
                     )
             else:
                 entry["state"] = "ok"
@@ -234,6 +261,8 @@ def _format(report: dict) -> str:
         detail = f"{entry['rows']} row(s)"
         if entry["last_updated"]:
             detail += f", last {entry['last_updated']}"
+        if entry["not_in_latest_feed"]:
+            detail += f"; {entry['not_in_latest_feed']} no longer in the feed"
         if entry["missing"]:
             detail += "; NULL " + ", ".join(
                 f"{c}x{n}" for c, n in entry["missing"].items())

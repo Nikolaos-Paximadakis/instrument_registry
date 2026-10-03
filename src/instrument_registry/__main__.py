@@ -5,10 +5,10 @@ from instrument_registry.service import refresh_athex, refresh_athex_etfs, refre
 
 def main() -> None:
     if "--refresh-athex" in sys.argv:
-        count = refresh_athex()
+        count = refresh_athex(allow_drop="--allow-drop" in sys.argv)
         print(f"instrument_registry: upserted {count} ATHEX-sourced instruments.")
     elif "--refresh-athex-etfs" in sys.argv:
-        count = refresh_athex_etfs()
+        count = refresh_athex_etfs(allow_drop="--allow-drop" in sys.argv)
         print(f"instrument_registry: upserted {count} ATHEX-sourced ETFs.")
     elif "--refresh-gleif" in sys.argv:
         result = refresh_gleif()
@@ -30,7 +30,8 @@ def main() -> None:
     else:
         raise SystemExit(
             "Usage: python -m instrument_registry "
-            "--refresh-athex | --refresh-athex-etfs | --refresh-gleif | "
+            "--refresh-athex [--allow-drop] | --refresh-athex-etfs [--allow-drop] | "
+            "--refresh-gleif | "
             "--backup | --status | --merge-learned <snapshot.db>"
         )
 

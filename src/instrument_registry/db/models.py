@@ -29,7 +29,15 @@ CREATE TABLE IF NOT EXISTS instruments (
     lei TEXT REFERENCES entities(lei),
     source TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    symbol TEXT
+    symbol TEXT,
+    -- When a refresh of this row's own instrument_type last found it in
+    -- ATHEX's feed — the same timestamp for every row one run saw. A row
+    -- whose stamp is older than its type's newest has left the feed
+    -- (delisted, usually); refreshes never delete, so the row and its ISIN
+    -- survive. NULL means no run has seen it since tracking began, not
+    -- that it is listed. `updated_at` cannot answer this: refresh_gleif()
+    -- and blacklist_lei() bump it too.
+    last_seen_in_feed TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_instruments_lei ON instruments(lei);
@@ -123,6 +131,11 @@ def _migrate(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_instruments_symbol ON instruments(symbol)"
+    )
+    _add_column(
+        connection, table="instruments", column="last_seen_in_feed", ddl="TEXT",
+        backfill_hint="run `python -m instrument_registry --refresh-athex` and "
+                       "`--refresh-athex-etfs` to start tracking feed membership",
     )
 
 
