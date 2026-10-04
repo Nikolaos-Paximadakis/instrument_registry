@@ -177,11 +177,13 @@ Standing authorization — no need to ask before each push or merge:
   collector). Don't wait for manual approval on the PR itself.
 - Squash-merge (`gh pr merge --squash`), and delete the branch after
   (`--delete-branch`, or pass both together).
-- This repo has no CI and no branch protection — the test run above *is* the merge
-  gate, so don't skip it. (The old reason for the gap, that branch protection wasn't
-  available for a private repo on the free tier, expired when this repo went **public
-  on 2026-08-16**; it could be turned on now. Until it is, nothing but that test run
-  stands between a push and `main`.)
+- This repo has no CI, so the test run above *is* the merge gate — don't skip it.
+  `main` has been branch-protected since 2026-10-04 (possible once the repo went
+  public on 2026-08-16; the free tier doesn't offer it for private repos): changes
+  land only through a PR (0 approvals required, so self-merge still works), the rule
+  applies to admins too, history must be linear (squash-merge satisfies it), and
+  force-pushing or deleting `main` is refused. It has no required status checks —
+  there is no CI to require — so it stops a stray push, not an untested merge.
 - **This repo is public — anything committed here is world-readable, permanently.**
   That's deliberate: `pothen_eshes` pins this package by git revision, and while it was
   private, a consumer running in a sandbox whose credentials were scoped to its own
