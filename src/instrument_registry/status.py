@@ -39,7 +39,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-from instrument_registry.backup import DEFAULT_ROOT as DEFAULT_BACKUP_ROOT
+from instrument_registry.backup import BACKUP_ROOT_ENV, DEFAULT_ROOT as DEFAULT_BACKUP_ROOT
+from instrument_registry.backup import default_root as default_backup_root
 from instrument_registry.db.session import DEFAULT_DB_PATH
 
 #: Every refresh that owns rows in `instruments`, keyed by the
@@ -101,14 +102,19 @@ def _latest_backup(backup_root: Path) -> dict | None:
 def status(
     db_path: str | Path | None = None,
     *,
-    backup_root: Path = DEFAULT_BACKUP_ROOT,
+    backup_root: Path | None = None,
 ) -> dict:
     """Inspects `db_path` read-only and returns a report dict. Never
     creates the DB: unlike every other entry point here, this one opens
     the file in SQLite read-only mode rather than going through
     `connect()`, because `connect()` runs `create_schema()` and would
     turn "you pointed --status at the wrong path" into "a new empty cache
-    now exists there, reporting zero of everything"."""
+    now exists there, reporting zero of everything".
+
+    `backup_root` defaults to `backup.default_root()`, i.e.
+    `$INSTRUMENT_REGISTRY_BACKUP_ROOT` if set — the same place `--backup`
+    writes to in this environment."""
+    backup_root = Path(backup_root) if backup_root is not None else default_backup_root()
     path = Path(db_path) if db_path is not None else Path(DEFAULT_DB_PATH)
     report: dict = {"db_path": str(path), "exists": path.exists(), "problems": []}
 
@@ -221,10 +227,16 @@ def status(
 
     backup = _latest_backup(backup_root)
     report["backup"] = backup
+    report["backup_root"] = str(backup_root)
     if backup is None:
+        # Still a problem even where the root doesn't exist at all: "never
+        # backed up" is a real signal on a machine that should have been.
+        # An environment that keeps backups somewhere else says so with
+        # the env var, rather than this check guessing from absence.
         report["problems"].append(
             f"no backup found under {backup_root} — run "
-            "`python -m instrument_registry --backup`"
+            "`python -m instrument_registry --backup`, or set "
+            f"{BACKUP_ROOT_ENV} if this environment keeps its backups elsewhere"
         )
     else:
         # Only the learned tables. `instruments` shrinking is normal (ATHEX
@@ -286,7 +298,7 @@ def _format(report: dict) -> str:
     lines.append("")
     backup = report.get("backup")
     if backup is None:
-        lines.append("backup: none found")
+        lines.append(f"backup: none found under {report['backup_root']}")
     else:
         lines.append(f"backup: latest {backup['created_utc']}")
         for table, counts in backup.get("shrunk", {}).items():
@@ -308,9 +320,9 @@ def main(argv: list[str] | None = None) -> int:
                     "Read-only: never fetches, never writes.")
     parser.add_argument("--db-path", type=Path, default=None,
                         help=f"cache to inspect (default: {DEFAULT_DB_PATH})")
-    parser.add_argument("--backup-root", type=Path, default=DEFAULT_BACKUP_ROOT,
+    parser.add_argument("--backup-root", type=Path, default=None,
                         help=f"backup staging area to compare against "
-                             f"(default: {DEFAULT_BACKUP_ROOT})")
+                             f"(default: ${BACKUP_ROOT_ENV}, else {DEFAULT_BACKUP_ROOT})")
     parser.add_argument("--json", action="store_true",
                         help="emit the raw report as JSON instead of text")
     args = parser.parse_args(argv)

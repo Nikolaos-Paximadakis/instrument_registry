@@ -75,6 +75,12 @@ snapshot dies with the machine:
 python -m instrument_registry --backup --root /data/registry-data/backup
 ```
 
+Or set `INSTRUMENT_REGISTRY_BACKUP_ROOT=/data/registry-data/backup` in that
+environment once. `--backup` writes there and `--status` checks there, so
+neither needs a flag. Without it, `--status` compares against this
+machine's default path, which can't exist in the container, so it always
+reports "no backup found" (#21).
+
 That failed outright until 2026-08-17 — the manifest's `git_head` field
 shelled out to `git`, which isn't in a deployed image, and a missing
 binary raises rather than returning non-zero, so the whole backup aborted
