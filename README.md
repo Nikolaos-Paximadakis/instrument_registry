@@ -147,18 +147,22 @@ is unverified — nothing to fetch yet either way.
   scored low — so the confirmed-wrong candidate can't keep outranking
   the real one. `title_text` is stored normalized (stripped + casefolded)
   to match how matching itself normalizes before comparing.
-- `remove_alias(isin, alias_text, db_path=None) -> None` — undoes
-  `add_alias()`: deletes the `(isin, alias_text)` row, e.g. to correct a
-  mistaken title-merge decision. No-op if no such row exists.
-- `unblacklist_lei(isin, lei, db_path=None) -> None` — undoes
-  `blacklist_lei()`: deletes the `(isin, lei)` row, e.g. to correct a
-  mistaken blacklist entry. Does not itself relink the LEI — the next
-  `refresh_gleif()` run does that naturally, since it only re-queries
-  instruments with `lei IS NULL`.
-- `remove_title_exclusion(isin, title_text, db_path=None) -> None` —
+- `remove_alias(isin, alias_text, reason=None, db_path=None) -> None` —
+  undoes `add_alias()`: deletes the `(isin, alias_text)` row, e.g. to
+  correct a mistaken title-merge decision, **and records the deletion as
+  a tombstone** in `learned_tombstones` (see `--merge-learned` below for
+  why). The tombstone is written even if there was no such row, which is
+  how to record a cleanup another copy of the cache hasn't had yet.
+  Re-adding the same key with `add_alias()` clears it.
+- `unblacklist_lei(isin, lei, reason=None, db_path=None) -> None` —
+  undoes `blacklist_lei()`: deletes the `(isin, lei)` row and records a
+  tombstone, as `remove_alias()` does. Does not itself relink the LEI —
+  the next `refresh_gleif()` run does that naturally, since it only
+  re-queries instruments with `lei IS NULL`.
+- `remove_title_exclusion(isin, title_text, reason=None, db_path=None) -> None` —
   undoes `exclude_title_match()`: deletes the `(isin, title_text)` row
   (`title_text` normalized the same way `exclude_title_match()` stores
-  it), e.g. to correct a mistaken exclusion. No-op if no such row exists.
+  it) and records a tombstone, as `remove_alias()` does.
 - `list_aliases(isin, db_path=None) -> list[Alias]`,
   `list_blacklisted(isin=None, db_path=None) -> list[BlacklistEntry]`,
   `list_title_exclusions(isin, db_path=None) -> list[TitleExclusion]` —
@@ -239,7 +243,8 @@ python -m instrument_registry --merge-learned <snapshot.db>
 ### `--merge-learned`
 
 Copies locally-learned rows (`instrument_aliases`, `lei_blacklist`,
-`title_isin_exclusions`) from a snapshot into a cache. Exists because
+`title_isin_exclusions`), and the tombstones recording deletions from
+them, from a snapshot into a cache. Exists because
 there is more than one live copy of this database — this machine's, and
 `pothen_eshes`'s deployed volume — and only these three tables can drift
 in a way no refresh can repair.
@@ -249,8 +254,10 @@ which is the wrong tool for reconciling two live copies: importing to
 carry four aliases across also discards everything the destination
 learned in the meantime. So this is deliberately narrow:
 
-- **additive only** — inserts, never updates, never deletes, so a merge
-  cannot lose data on either side and is safe against a live cache
+- **never loses a row silently** — inserts, never updates; the only
+  deletion is a destination row the source holds a *newer tombstone*
+  for (below), which is listed in the preview and kept inside the
+  tombstone so it can be put back
 - **learned tables only** — `instruments`/`entities` are left alone even
   where the source has more of them; those come from a refresh, and
   seeding them from a stale snapshot plants rows upstream no longer agrees
@@ -322,9 +329,32 @@ it: `'% ΡΟΛΙΜΕΝΑΣ%'` and `'% ΡΙΝΘΟΥ%'` both return 0 on the same
 Better still, **don't pattern-match for corruption when you can test for
 it**: equality against the known-bad strings returns 0, and a
 reachability sweep returns 0 orphans. Both are immune to this class of
-error; no `LIKE` is. Use a pattern to explore, never to conclude. The durable
-fix is to make deletion an additive fact — a tombstone that merges like
-any other row — which is a schema change and isn't built yet.
+error; no `LIKE` is. Use a pattern to explore, never to conclude.
+
+**Tombstones (#23, 2026-10-04) make deletion an additive fact.**
+`remove_alias()`/`unblacklist_lei()`/`remove_title_exclusion()` write a
+row to `learned_tombstones` as well as deleting, and `--merge-learned`
+carries those across like any other learned row. When a key has both a
+tombstone and a live row, **the newer timestamp wins**: the tombstone's
+`deleted_at` against the row's `created_at`.
+
+- A stale copy's row predates the deletion, so the tombstone wins. A
+  source row is shown as `x … deleted here` and not reinstated; a
+  destination row is shown as `-` and, under `--apply`, deleted.
+- A deliberate re-add after the deletion creates a fresh row stamped
+  now(), so the row wins and the older tombstone is dropped.
+
+This depends on `created_at` meaning "first learned", which only became
+true with #22. Rows restamped before that carry later dates than they
+should, but every tombstone postdates the fix, so none can outrank one.
+For the same reason, **a tombstone recorded now for an older cleanup
+must carry today's date** (which is what calling `remove_alias()` now
+does), with the real date in `reason`. Back-dating one to 2026-08-09
+would lose to the four corrupted aliases restamped on 2026-08-16.
+
+Tombstones only cover deletions made through those three functions. A
+row deleted by hand, or before 2026-10-04, is still just missing, which
+is why the preview stays the default.
 
 ### `--status`
 

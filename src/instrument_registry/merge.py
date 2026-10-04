@@ -16,16 +16,20 @@ whatever the destination learned that the source hasn't got.
 
 So the semantics here are deliberately narrow:
 
-- **Additive only.** Rows are inserted, never updated and never deleted.
-  A merge cannot lose data on either side, which is what makes it safe
-  to run against a live deployed cache. Restoring a copy wholesale is a
-  different operation and remains `import_snapshot()`'s job.
+- **Never loses a row silently.** Rows are inserted, never updated. The
+  one thing a merge deletes is a destination row that the source has a
+  *newer tombstone* for (see "Tombstones" below) — that is a cleanup
+  reaching the copy that missed it, it is listed in the preview, and the
+  deleted row is kept in the tombstone so it can be put back. Restoring
+  a copy wholesale is a different operation and remains
+  `import_snapshot()`'s job.
 - **Learned tables only.** `instruments`/`entities` are untouched even
   when the source has rows the destination lacks — those come from a
   refresh, and quietly seeding them from a stale snapshot would plant
   upstream data that no longer matches upstream.
 - **Idempotent**, via each table's natural key (`(isin, alias_text)`,
-  `(isin, lei)`, `(isin, title_text)`). Re-running merges nothing new.
+  `(isin, lei)`, `(isin, title_text)`), and `(table, isin, key)` for
+  tombstones. Re-running merges nothing new.
 - **Provenance preserved.** `source`, `confidence`, `reason` and
   crucially `created_at` are carried across verbatim rather than
   restamped with now(). A restore that rewrites `created_at` destroys
@@ -41,8 +45,7 @@ dropped — re-run the merge afterwards to pick them up.
 
 ## The deletion trap
 
-An additive merge cannot carry a deletion, and that is not a gap to be
-filled — it is a limit worth being loud about. A row present in the
+An additive merge cannot carry a deletion. A row present in the
 source and absent from the destination has two completely different
 explanations that look identical from here:
 
@@ -115,17 +118,39 @@ reachability sweep over all 183 rows returns 0 orphans; both are immune
 to this whole class of error, which no `LIKE` ever is. Use a pattern to
 explore, never to conclude.
 
-The durable fix is to make deletion an **additive fact** — a tombstone
-written by `remove_alias()`/`unblacklist_lei()`/`remove_title_exclusion()`
-that merges in both directions like any other row, so a cleanup survives
-a merge from a stale copy and intent never has to be guessed. That is a
-schema change and is not implemented here yet.
+## Tombstones (#23)
+
+The durable fix is to make deletion an **additive fact**.
+`remove_alias()`/`unblacklist_lei()`/`remove_title_exclusion()` write a
+row to `learned_tombstones` as well as deleting, and this module merges
+those like any other learned row. When a key has both a tombstone and a
+live row, **the newer timestamp wins** — the tombstone's `deleted_at`
+against the row's `created_at`:
+
+- a stale copy's row predates the deletion, so the tombstone wins: a
+  source row is *blocked* rather than reinstated, and a destination row
+  is *deleted*;
+- a deliberate re-add after the deletion creates a fresh row stamped
+  now(), so the row wins and the older tombstone is dropped.
+
+That rule relies on `created_at` meaning "first learned", which only
+became true with #22 (2026-10-04). Rows restamped before that carry
+later dates than they should, but every tombstone is written after the
+fix, so a restamp can never outrank one. The same reasoning is why a
+tombstone recorded now for an older cleanup must carry *today's*
+`deleted_at`, with the real date in `reason`: back-dating it to
+2026-08-09 would lose to the four rows restamped on 2026-08-16.
+
+Tombstones only cover deletions made through those three functions. A
+row deleted by hand, or before 2026-10-04, is still just missing, which
+is why the preview default stays.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 from instrument_registry.db.session import DEFAULT_DB_PATH, connect
@@ -150,6 +175,24 @@ LEARNED_TABLES = {
 # not, so a blacklisted pair survives its instrument disappearing.
 NEEDS_INSTRUMENT = ("instrument_aliases", "title_isin_exclusions")
 
+TOMBSTONE_COLUMNS = ("table_name", "isin", "key_text", "deleted_at", "reason", "row_json")
+
+
+def _when(stamp: str) -> datetime:
+    # Parsed rather than compared as strings: isoformat() drops the
+    # fractional part when it is zero, so two stamps from the same second
+    # need not sort lexically. Every stamp this package writes is UTC; one
+    # without an offset is read as UTC rather than left to crash a merge.
+    when = datetime.fromisoformat(stamp)
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def _tombstone_wins(deleted_at: str, created_at: str) -> bool:
+    """The precedence rule (#23): whichever happened last is true. A tie
+    goes to the deletion, since a delete can only follow the add it
+    undoes."""
+    return _when(deleted_at) >= _when(created_at)
+
 
 def merge_learned(
     source: Path | str,
@@ -157,9 +200,9 @@ def merge_learned(
     *,
     apply: bool = False,
 ) -> dict:
-    """Merges the three learned tables from `source` into the cache at
-    `db_path`. Reports without writing unless `apply` — see "The deletion
-    trap" above for why that's the default."""
+    """Merges the three learned tables, and the tombstones recording
+    deletions from them, from `source` into the cache at `db_path`.
+    Reports without writing unless `apply`."""
     source = Path(source).expanduser()
     if not source.exists():
         raise FileNotFoundError(f"no snapshot at {source}")
@@ -179,11 +222,21 @@ def merge_learned(
             raise ValueError(
                 f"{source} is missing {', '.join(missing)} — not an "
                 "instrument_registry cache?")
+        # A snapshot taken before tombstones existed simply has none.
+        source_tombstones = [
+            dict(row) for row in src.execute(
+                f"SELECT {', '.join(TOMBSTONE_COLUMNS)} FROM learned_tombstones")
+        ] if "learned_tombstones" in present else []
 
         dest = connect(db_path)
         try:
             known_isins = {
                 row[0] for row in dest.execute("SELECT isin FROM instruments")
+            }
+            dest_tombstones = {
+                (row["table_name"], row["isin"], row["key_text"]): dict(row)
+                for row in dest.execute(
+                    f"SELECT {', '.join(TOMBSTONE_COLUMNS)} FROM learned_tombstones")
             }
             report: dict = {
                 "source": str(source),
@@ -193,14 +246,65 @@ def merge_learned(
             }
 
             for table, (key_columns, columns) in LEARNED_TABLES.items():
+                key_column = key_columns[1]
                 existing = {
-                    tuple(row) for row in dest.execute(
-                        f"SELECT {', '.join(key_columns)} FROM {table}")
+                    (row["isin"], row[key_column]): row["created_at"]
+                    for row in dest.execute(
+                        f"SELECT isin, {key_column}, created_at FROM {table}")
                 }
-                added, skipped = [], []
+                already_present = len(existing)
+                added, skipped, blocked = [], [], []
+                deleted, tombstoned, superseded = [], [], []
+
+                # Source tombstones first: one that is newer than the
+                # destination's live row deletes it, so the cleanup reaches
+                # the copy that missed it.
+                for stone in source_tombstones:
+                    if stone["table_name"] != table:
+                        continue
+                    key = (stone["isin"], stone["key_text"])
+                    full_key = (table, *key)
+                    created_at = existing.get(key)
+                    if created_at is not None:
+                        if not _tombstone_wins(stone["deleted_at"], created_at):
+                            superseded.append(stone)
+                            continue
+                        row = dest.execute(
+                            f"SELECT {', '.join(columns)} FROM {table} "
+                            f"WHERE isin = ? AND {key_column} = ?", key).fetchone()
+                        if apply:
+                            dest.execute(
+                                f"DELETE FROM {table} WHERE isin = ? AND {key_column} = ?",
+                                key)
+                        del existing[key]
+                        deleted.append(dict(row))
+                        # Keep the row being deleted, so this is undoable.
+                        stone = {**stone, "row_json": stone["row_json"] or json.dumps(
+                            dict(row), ensure_ascii=False)}
+                    have = dest_tombstones.get(full_key)
+                    if have is not None and _when(have["deleted_at"]) >= _when(stone["deleted_at"]):
+                        continue
+                    if apply:
+                        dest.execute(
+                            f"INSERT INTO learned_tombstones ({', '.join(TOMBSTONE_COLUMNS)}) "
+                            f"VALUES ({', '.join('?' for _ in TOMBSTONE_COLUMNS)}) "
+                            "ON CONFLICT(table_name, isin, key_text) DO UPDATE SET "
+                            "deleted_at = excluded.deleted_at, reason = excluded.reason, "
+                            "row_json = COALESCE(excluded.row_json, row_json)",
+                            tuple(stone[c] for c in TOMBSTONE_COLUMNS),
+                        )
+                    dest_tombstones[full_key] = stone
+                    tombstoned.append(stone)
+
                 for row in src.execute(f"SELECT {', '.join(columns)} FROM {table}"):
                     key = tuple(row[c] for c in key_columns)
                     if key in existing:
+                        continue
+                    stone = dest_tombstones.get((table, *key))
+                    if stone is not None and _tombstone_wins(
+                            stone["deleted_at"], row["created_at"]):
+                        blocked.append({**dict(row), "deleted_at": stone["deleted_at"],
+                                        "deletion_reason": stone["reason"]})
                         continue
                     if table in NEEDS_INSTRUMENT and row["isin"] not in known_isins:
                         skipped.append(dict(row))
@@ -212,14 +316,28 @@ def merge_learned(
                             f"ON CONFLICT DO NOTHING",
                             tuple(row[c] for c in columns),
                         )
+                        if stone is not None:
+                            # The row was re-added after this deletion; the
+                            # same as add_alias() clearing it locally.
+                            dest.execute(
+                                "DELETE FROM learned_tombstones WHERE table_name = ? "
+                                "AND isin = ? AND key_text = ?", (table, *key))
                     added.append(dict(row))
 
                 report["tables"][table] = {
                     "added": len(added),
-                    "already_present": len(existing),
+                    "already_present": already_present,
                     "skipped_unknown_isin": len(skipped),
+                    "blocked_by_tombstone": len(blocked),
+                    "deleted": len(deleted),
+                    "tombstones_added": len(tombstoned),
+                    "tombstones_superseded": len(superseded),
                     "added_rows": added,
                     "skipped_rows": skipped,
+                    "blocked_rows": blocked,
+                    "deleted_rows": deleted,
+                    "tombstone_rows": tombstoned,
+                    "superseded_tombstones": superseded,
                 }
 
             if apply:
@@ -231,6 +349,11 @@ def merge_learned(
         src.close()
 
 
+def _label(row: dict) -> str:
+    return (row.get("alias_text") or row.get("title_text") or row.get("lei")
+            or row.get("key_text"))
+
+
 def _render(report: dict) -> str:
     lines = [
         f"source:      {report['source']}",
@@ -240,46 +363,62 @@ def _render(report: dict) -> str:
         lines.append("(preview — nothing was written; pass --apply to commit)")
     lines.append("")
 
-    total_added = total_skipped = 0
+    total_added = total_skipped = total_deleted = total_blocked = 0
     for table, result in report["tables"].items():
         total_added += result["added"]
         total_skipped += result["skipped_unknown_isin"]
-        note = ""
+        total_deleted += result["deleted"]
+        total_blocked += result["blocked_by_tombstone"]
+        notes = [f"{result['already_present']} already present"]
         if result["skipped_unknown_isin"]:
-            note = f", {result['skipped_unknown_isin']} skipped (ISIN not in destination)"
-        lines.append(
-            f"  {table:24} +{result['added']} "
-            f"({result['already_present']} already present{note})")
+            notes.append(f"{result['skipped_unknown_isin']} skipped (ISIN not in destination)")
+        if result["blocked_by_tombstone"]:
+            notes.append(f"{result['blocked_by_tombstone']} blocked (deleted here)")
+        if result["deleted"]:
+            notes.append(f"-{result['deleted']} deleted (deleted in source)")
+        if result["tombstones_added"]:
+            notes.append(f"{result['tombstones_added']} deletion record(s) carried")
+        lines.append(f"  {table:24} +{result['added']} ({', '.join(notes)})")
         for row in result["added_rows"]:
-            label = row.get("alias_text") or row.get("title_text") or row.get("lei")
-            lines.append(f"      + {row['isin']}  {label}")
+            lines.append(f"      + {row['isin']}  {_label(row)}")
+        for row in result["deleted_rows"]:
+            lines.append(f"      - {row['isin']}  {_label(row)}")
+        for row in result["blocked_rows"]:
+            reason = f"  ({row['deletion_reason']})" if row["deletion_reason"] else ""
+            lines.append(
+                f"      x {row['isin']}  {_label(row)}  — deleted here "
+                f"{row['deleted_at']}{reason}")
         for row in result["skipped_rows"]:
-            label = row.get("alias_text") or row.get("title_text") or row.get("lei")
-            lines.append(f"      ! {row['isin']}  {label}")
+            lines.append(f"      ! {row['isin']}  {_label(row)}")
 
     lines.append("")
     verb = "merged" if report["applied"] else "would merge"
-    lines.append(f"{verb} {total_added} learned row(s).")
+    lines.append(f"{verb} {total_added} learned row(s), "
+                 f"{'deleted' if report['applied'] else 'would delete'} {total_deleted}.")
+    if total_blocked:
+        lines.append(
+            f"{total_blocked} row(s) not reinstated: the destination deleted them "
+            "after the source last wrote them.")
     if total_skipped:
         lines.append(
             f"{total_skipped} row(s) skipped because the destination has no such "
             "instrument — run the relevant refresh there, then merge again.")
-    if total_added and not report["applied"]:
+    if (total_added or total_deleted) and not report["applied"]:
         lines.append(
-            "\nCheck these rows before applying. A row missing from the destination "
-            "may be one it never received — or one it deliberately deleted, which an "
-            "additive merge would reinstate. Nothing here can tell those apart; see "
-            "\"The deletion trap\" in merge.py.")
+            "\nCheck these rows before applying. Deletions made with remove_alias()/"
+            "unblacklist_lei()/remove_title_exclusion() are recorded and honoured, but "
+            "a row deleted by hand, or before tombstones existed (2026-10-04), is just "
+            "missing — and an added row may be one the destination deliberately deleted. "
+            "See \"The deletion trap\" in merge.py.")
     return "\n".join(lines)
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Merge locally-learned rows (aliases, LEI blacklist, title "
-                    "exclusions) from a snapshot into a cache. Additive only: "
-                    "never updates or deletes, and never touches instruments/"
-                    "entities. Previews by default — an additive merge cannot "
-                    "carry a deletion, so read the rows before applying.")
+                    "exclusions) and their deletion records from a snapshot into "
+                    "a cache. Never touches instruments/entities. A deletion "
+                    "newer than a row wins over it, in either direction. "
+                    "Previews by default — read the rows before applying.")
     parser.add_argument("source", type=Path,
                         help="snapshot DB to merge FROM (read-only)")
     parser.add_argument("--db-path", type=Path, default=None,

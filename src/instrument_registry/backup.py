@@ -71,7 +71,7 @@ DEFAULT_KEEP = 30
 
 TABLES = [
     "instruments", "entities", "instrument_aliases",
-    "lei_blacklist", "title_isin_exclusions",
+    "lei_blacklist", "title_isin_exclusions", "learned_tombstones",
 ]
 
 

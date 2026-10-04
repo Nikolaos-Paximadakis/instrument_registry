@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -714,6 +715,83 @@ def test_remove_title_exclusion_is_a_noop_for_a_nonexistent_entry(tmp_path):
     _seed_instrument(db_path, isin="GRS518003009", name="SOME COMPANY")
 
     remove_title_exclusion("GRS518003009", "NEVER EXCLUDED", db_path=db_path)  # must not raise
+
+
+def _tombstones(db_path):
+    connection = connect(db_path)
+    try:
+        return {
+            (row["table_name"], row["isin"], row["key_text"]): dict(row)
+            for row in connection.execute("SELECT * FROM learned_tombstones")
+        }
+    finally:
+        connection.close()
+
+
+def test_each_remove_records_a_tombstone_carrying_the_deleted_row(tmp_path):
+    # #23: a deletion has to be a row, not an absence, or a merge from a
+    # stale copy cannot tell it apart from a row this copy never had.
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    add_alias("GRS332003008", "AN ALIAS", source="test", confidence=0.9, db_path=db_path)
+    blacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", reason="wrong", db_path=db_path)
+    exclude_title_match("GRS332003008", "  Some Title ", reason="r", db_path=db_path)
+
+    remove_alias("GRS332003008", "AN ALIAS", reason="corrupted", db_path=db_path)
+    unblacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    remove_title_exclusion("GRS332003008", "SOME TITLE", db_path=db_path)
+
+    stones = _tombstones(db_path)
+    assert set(stones) == {
+        ("instrument_aliases", "GRS332003008", "AN ALIAS"),
+        ("lei_blacklist", "GRS332003008", "213800OYHR1MPQ5VJL60"),
+        ("title_isin_exclusions", "GRS332003008", "some title"),
+    }
+    alias = stones[("instrument_aliases", "GRS332003008", "AN ALIAS")]
+    assert alias["reason"] == "corrupted"
+    assert json.loads(alias["row_json"])["confidence"] == 0.9
+
+
+def test_removing_a_key_that_is_not_there_still_records_the_deletion(tmp_path):
+    # How a cleanup another copy hasn't had yet gets recorded — including
+    # the four aliases deleted on 2026-08-09, before tombstones existed.
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+
+    remove_alias("GRS332003008", "NEVER ADDED", reason="known-bad", db_path=db_path)
+
+    stone = _tombstones(db_path)[("instrument_aliases", "GRS332003008", "NEVER ADDED")]
+    assert stone["row_json"] is None
+
+
+def test_re_removing_keeps_the_original_deleted_at(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    remove_alias("GRS332003008", "X", reason="first", db_path=db_path)
+    first = _tombstones(db_path)[("instrument_aliases", "GRS332003008", "X")]
+
+    remove_alias("GRS332003008", "X", db_path=db_path)
+
+    again = _tombstones(db_path)[("instrument_aliases", "GRS332003008", "X")]
+    assert again["deleted_at"] == first["deleted_at"]
+    assert again["reason"] == "first"
+
+
+def test_re_adding_a_deleted_key_clears_its_tombstone(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    add_alias("GRS332003008", "A", source="t", db_path=db_path)
+    blacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    exclude_title_match("GRS332003008", "t", db_path=db_path)
+    remove_alias("GRS332003008", "A", db_path=db_path)
+    unblacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    remove_title_exclusion("GRS332003008", "t", db_path=db_path)
+
+    add_alias("GRS332003008", "A", source="t", db_path=db_path)
+    blacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    exclude_title_match("GRS332003008", " T ", db_path=db_path)
+
+    assert _tombstones(db_path) == {}
 
 
 def test_list_aliases_returns_all_aliases_for_the_isin_oldest_first(tmp_path):

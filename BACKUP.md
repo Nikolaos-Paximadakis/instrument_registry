@@ -11,7 +11,7 @@ There is exactly one: the local cache DB.
 
 | Asset | Size | In git? | Regenerable? | Authoritative copy | Backed up by |
 |---|---|---|---|---|---|
-| `instrument_registry.db` | ~0.2 MB | No | **Partially** — `instruments`/`entities` yes, `instrument_aliases`/`lei_blacklist`/`title_isin_exclusions` no | This machine, or a `pothen_eshes` deployed volume if one is writing to a shared cache live | `backup.py` → `snapshots/` |
+| `instrument_registry.db` | ~0.2 MB | No | **Partially** — `instruments`/`entities` yes, `instrument_aliases`/`lei_blacklist`/`title_isin_exclusions`/`learned_tombstones` no | This machine, or a `pothen_eshes` deployed volume if one is writing to a shared cache live | `backup.py` → `snapshots/` |
 
 Default location: `${XDG_DATA_HOME:-~/.local/share}/instrument_registry/instrument_registry.db`
 (see README.md → Database). Size is as of 2026-08-09 and will drift.
@@ -23,9 +23,10 @@ Default location: `${XDG_DATA_HOME:-~/.local/share}/instrument_registry/instrume
 (`pothen_eshes`) needs to rebuild its own regenerable data. That's cheap
 enough that splitting the DB into a "worth backing up" tier and a
 "skip it, just re-fetch" tier isn't worth the complexity: the whole file
-is under 200 KB, so it's backed up together, every time. The three
+is under 200 KB, so it's backed up together, every time. The four
 locally-learned tables (`instrument_aliases`, `lei_blacklist`,
-`title_isin_exclusions`) are the ones that actually can't be
+`title_isin_exclusions`, and `learned_tombstones`, which records
+deletions from the other three) are the ones that actually can't be
 reconstructed from anywhere else — see CLAUDE.md's central invariant.
 
 ## Local backup
@@ -97,9 +98,9 @@ tree".
   `MANIFEST.json` first.
 - `instruments`/`entities` can also just be rebuilt with
   `refresh_athex()`/`refresh_gleif()` instead of restoring — but
-  `instrument_aliases`/`lei_blacklist`/`title_isin_exclusions` can't, so
-  restoring the whole file (not re-running the refreshes) is what
-  actually matters for those three.
+  `instrument_aliases`/`lei_blacklist`/`title_isin_exclusions`/
+  `learned_tombstones` can't, so restoring the whole file (not re-running
+  the refreshes) is what actually matters for those four.
 
 ## Not automated
 

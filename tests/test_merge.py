@@ -15,7 +15,13 @@ import pytest
 
 from instrument_registry import merge as merge_mod
 from instrument_registry.db.session import connect
-from instrument_registry.service import add_alias, blacklist_lei, exclude_title_match
+from instrument_registry.service import (
+    add_alias,
+    blacklist_lei,
+    exclude_title_match,
+    remove_alias,
+    unblacklist_lei,
+)
 
 
 def _seed_instrument(db_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA"):
@@ -258,3 +264,155 @@ def test_main_emits_json_and_exits_zero(tmp_path, capsys):
     assert code == 0
     report = json.loads(capsys.readouterr().out)
     assert report["tables"]["instrument_aliases"]["added"] == 1
+
+
+# --- tombstones (#23) -------------------------------------------------------
+
+
+def _tombstone_keys(db_path):
+    connection = connect(db_path)
+    try:
+        return {
+            (row["table_name"], row["isin"], row["key_text"])
+            for row in connection.execute("SELECT * FROM learned_tombstones")
+        }
+    finally:
+        connection.close()
+
+
+def test_a_tombstoned_row_is_blocked_rather_than_reinstated(tmp_path):
+    # The 2026-08-16 incident, with the deletion recorded: the destination
+    # removed the corrupted alias after the source last wrote it, so the
+    # source's copy is stale and must not come back — even under --apply.
+    source, dest = tmp_path / "source.db", tmp_path / "dest.db"
+    for path in (source, dest):
+        _seed_instrument(path)
+        add_alias("GRS003003035", "ΔΙΕΘΝΗΣ ΡΟΛΙΜΕΝΑΣ ΑΘΗΝΩΝ", source="harvest", db_path=path)
+    remove_alias("GRS003003035", "ΔΙΕΘΝΗΣ ΡΟΛΙΜΕΝΑΣ ΑΘΗΝΩΝ",
+                 reason="corrupted by unbounded regex", db_path=dest)
+
+    report = merge_mod.merge_learned(source, dest, apply=True)
+
+    aliases = report["tables"]["instrument_aliases"]
+    assert aliases["added"] == 0
+    assert aliases["blocked_by_tombstone"] == 1
+    assert aliases["blocked_rows"][0]["deletion_reason"] == "corrupted by unbounded regex"
+    assert _aliases(dest) == {}
+
+
+def test_a_newer_tombstone_deletes_the_stale_destination_row(tmp_path):
+    # The other direction: the cleanup was made on the source, and the
+    # destination is the copy that missed it. Without this the two copies
+    # never converge.
+    source, dest = tmp_path / "source.db", tmp_path / "dest.db"
+    for path in (source, dest):
+        _seed_instrument(path)
+        add_alias("GRS003003035", "ΧΑΛ Υ", source="harvest", db_path=path)
+        blacklist_lei("GRS003003035", "5299009N55YRQC69CN08", reason="r", db_path=path)
+    remove_alias("GRS003003035", "ΧΑΛ Υ", reason="corrupted", db_path=source)
+    unblacklist_lei("GRS003003035", "5299009N55YRQC69CN08", db_path=source)
+
+    preview = merge_mod.merge_learned(source, dest)
+    assert preview["tables"]["instrument_aliases"]["deleted"] == 1
+    assert ("GRS003003035", "ΧΑΛ Υ") in _aliases(dest)  # preview wrote nothing
+
+    report = merge_mod.merge_learned(source, dest, apply=True)
+
+    assert report["tables"]["instrument_aliases"]["deleted"] == 1
+    assert report["tables"]["lei_blacklist"]["deleted"] == 1
+    assert _aliases(dest) == {}
+    assert ("instrument_aliases", "GRS003003035", "ΧΑΛ Υ") in _tombstone_keys(dest)
+    connection = connect(dest)
+    try:
+        row_json = connection.execute(
+            "SELECT row_json FROM learned_tombstones WHERE key_text = ?",
+            ("ΧΑΛ Υ",)).fetchone()[0]
+    finally:
+        connection.close()
+    assert json.loads(row_json)["source"] == "harvest"  # undoable
+
+
+def test_a_re_add_after_the_deletion_beats_the_older_tombstone(tmp_path):
+    # Newer timestamp wins: the destination deleted the alias, then the
+    # source deliberately re-learned it afterwards. The re-add is the
+    # later fact, so it lands and the stale tombstone goes.
+    source, dest = tmp_path / "source.db", tmp_path / "dest.db"
+    for path in (source, dest):
+        _seed_instrument(path)
+    remove_alias("GRS003003035", "ΕΘΝΙΚΗ", reason="mistake", db_path=dest)
+    add_alias("GRS003003035", "ΕΘΝΙΚΗ", source="re-learned", db_path=source)
+
+    report = merge_mod.merge_learned(source, dest, apply=True)
+
+    assert report["tables"]["instrument_aliases"]["added"] == 1
+    assert ("GRS003003035", "ΕΘΝΙΚΗ") in _aliases(dest)
+    assert _tombstone_keys(dest) == set()
+
+
+def test_an_older_tombstone_does_not_delete_a_re_added_row(tmp_path):
+    source, dest = tmp_path / "source.db", tmp_path / "dest.db"
+    for path in (source, dest):
+        _seed_instrument(path)
+    remove_alias("GRS003003035", "ΕΘΝΙΚΗ", db_path=source)
+    add_alias("GRS003003035", "ΕΘΝΙΚΗ", source="re-learned", db_path=dest)
+
+    report = merge_mod.merge_learned(source, dest, apply=True)
+
+    aliases = report["tables"]["instrument_aliases"]
+    assert aliases["deleted"] == 0
+    assert aliases["tombstones_superseded"] == 1
+    assert ("GRS003003035", "ΕΘΝΙΚΗ") in _aliases(dest)
+    assert _tombstone_keys(dest) == set()
+
+
+def test_tombstones_merge_both_ways_and_idempotently(tmp_path):
+    # A deletion recorded on a key neither copy currently holds still
+    # travels, so a stale third copy merged in later is blocked too.
+    a, b = tmp_path / "a.db", tmp_path / "b.db"
+    for path in (a, b):
+        _seed_instrument(path)
+    remove_alias("GRS003003035", "ΡΟΛΙΜΕΝΑΣ", reason="known-bad", db_path=a)
+
+    first = merge_mod.merge_learned(a, b, apply=True)
+    second = merge_mod.merge_learned(a, b, apply=True)
+    back = merge_mod.merge_learned(b, a, apply=True)
+
+    assert first["tables"]["instrument_aliases"]["tombstones_added"] == 1
+    assert second["tables"]["instrument_aliases"]["tombstones_added"] == 0
+    assert back["tables"]["instrument_aliases"]["tombstones_added"] == 0
+    assert _tombstone_keys(b) == {("instrument_aliases", "GRS003003035", "ΡΟΛΙΜΕΝΑΣ")}
+
+
+def test_a_source_that_predates_tombstones_still_merges(tmp_path):
+    # Old backups have no learned_tombstones table, and the source is
+    # opened read-only so it can't be given one.
+    import sqlite3
+    source, dest = tmp_path / "source.db", tmp_path / "dest.db"
+    for path in (source, dest):
+        _seed_instrument(path)
+    add_alias("GRS003003035", "ΕΘΝΙΚΗ", source="s", db_path=source)
+    raw = sqlite3.connect(source)
+    raw.execute("DROP TABLE learned_tombstones")
+    raw.commit()
+    raw.close()
+
+    report = merge_mod.merge_learned(source, dest, apply=True)
+
+    assert report["tables"]["instrument_aliases"]["added"] == 1
+
+
+def test_preview_lists_deletions_and_blocked_rows(tmp_path, capsys):
+    source, dest = tmp_path / "source.db", tmp_path / "dest.db"
+    for path in (source, dest):
+        _seed_instrument(path)
+        add_alias("GRS003003035", "STALE IN DEST", source="s", db_path=path)
+        add_alias("GRS003003035", "STALE IN SOURCE", source="s", db_path=path)
+    remove_alias("GRS003003035", "STALE IN DEST", db_path=source)
+    remove_alias("GRS003003035", "STALE IN SOURCE", reason="bad", db_path=dest)
+
+    merge_mod.main([str(source), "--db-path", str(dest)])
+    out = capsys.readouterr().out
+
+    assert "- GRS003003035  STALE IN DEST" in out
+    assert "x GRS003003035  STALE IN SOURCE" in out
+    assert "(bad)" in out

@@ -43,11 +43,11 @@ Every lookup/match reads local SQLite exclusively — fetch once, cache, query f
 
 ### The central invariant: two kinds of table
 
-The five tables split into two categories, and conflating them causes real data loss:
+The six tables split into two categories, and conflating them causes real data loss:
 
 | Upstream-sourced, regenerable | Locally-learned, **irreplaceable** |
 |---|---|
-| `instruments`, `entities` | `instrument_aliases`, `lei_blacklist`, `title_isin_exclusions` |
+| `instruments`, `entities` | `instrument_aliases`, `lei_blacklist`, `title_isin_exclusions`, `learned_tombstones` |
 | rebuilt any time by `refresh_*()` | recoverable from no external source |
 
 `refresh_athex()`/`refresh_gleif()` must never write to the right-hand column — that's
@@ -55,8 +55,14 @@ what makes a refresh safe to re-run. The corollary bites when there is more than
 live copy of the cache (there is: this machine's, and `pothen_eshes`'s deployed volume):
 the left-hand column never needs reconciling because a refresh rebuilds it, and the
 right-hand column can only be reconciled by copying rows across. `--merge-learned`
-(`merge.py`) is that operation — additive only, learned tables only, idempotent,
-`created_at` preserved, and it **previews unless given `--apply`**. Reach for
+(`merge.py`) is that operation — learned tables only, idempotent, `created_at`
+preserved, and it **previews unless given `--apply`**. Since #23 the `remove_*()`
+functions write a tombstone to `learned_tombstones`, and merge honours it. When a key
+has both a tombstone and a live row, the newer of `deleted_at`/`created_at` wins, so a
+newer tombstone blocks a stale row from coming back *and* deletes it from the copy that
+missed the cleanup. That is the only delete a merge does. It's listed in the preview,
+and the row is kept in `row_json`. Delete learned rows through `remove_*()`, never raw
+SQL, or the deletion is just an absence again. Reach for
 `import_snapshot()` instead only when you mean to *replace* a copy wholesale, which
 discards whatever the destination learned meanwhile.
 
