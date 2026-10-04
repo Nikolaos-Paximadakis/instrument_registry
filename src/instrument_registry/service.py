@@ -301,8 +301,11 @@ def add_alias(
     outside ATHEX/GLEIF (e.g. a consuming project's own confirmed human/AI
     title-merge decision) — `source` should identify where it came from
     (e.g. "pothen_eshes.title_review:cluster_id=366"). Upserts on
-    (isin, alias_text), so re-harvesting the same decision refreshes rather
-    than duplicates. Silently a no-op for an unknown isin (FK constraint —
+    (isin, alias_text), so re-harvesting the same decision refreshes
+    `source`/`confidence` rather than duplicating — but keeps the row's
+    original `created_at`, which means "first learned", not "last
+    re-asserted" (restamping it destroyed the evidence in a real incident,
+    see #22). Silently a no-op for an unknown isin (FK constraint —
     callers are expected to have already resolved the isin via a match)."""
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
@@ -313,8 +316,7 @@ def add_alias(
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(isin, alias_text) DO UPDATE SET
                 source = excluded.source,
-                confidence = excluded.confidence,
-                created_at = excluded.created_at
+                confidence = excluded.confidence
             """,
             (isin, alias_text, source, confidence, now),
         )
@@ -338,7 +340,10 @@ def blacklist_lei(
 
     Only the instrument's own link is cleared — the entity row is left
     alone, since a wrongly-linked LEI is usually a perfectly real entity
-    that other instruments legitimately point at."""
+    that other instruments legitimately point at.
+
+    Re-blacklisting an existing pair refreshes `reason` but keeps the
+    original `created_at` (see `add_alias()`)."""
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
     try:
@@ -347,8 +352,7 @@ def blacklist_lei(
             INSERT INTO lei_blacklist (isin, lei, reason, created_at)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(isin, lei) DO UPDATE SET
-                reason = excluded.reason,
-                created_at = excluded.created_at
+                reason = excluded.reason
             """,
             (isin, lei, reason, now),
         )
@@ -442,7 +446,8 @@ def exclude_title_match(
     `fuzzy_match_title_scored()` normalizes before comparing — an
     exclusion is looked up by exact normalized string, not re-scored.
     Upserts on (isin, title_text), so re-recording the same correction
-    refreshes rather than duplicates. Note `isin`'s FK reference isn't
+    refreshes `reason` rather than duplicating, keeping the original
+    `created_at` (see `add_alias()`). Note `isin`'s FK reference isn't
     actually enforced (this connection never sets `PRAGMA foreign_keys =
     ON`, same as `add_alias()`) — a typo'd isin is stored as-is rather
     than rejected, so double-check the isin came from a real match."""
@@ -455,8 +460,7 @@ def exclude_title_match(
             INSERT INTO title_isin_exclusions (isin, title_text, reason, created_at)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(isin, title_text) DO UPDATE SET
-                reason = excluded.reason,
-                created_at = excluded.created_at
+                reason = excluded.reason
             """,
             (isin, normalized_title, reason, now),
         )

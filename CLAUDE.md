@@ -69,7 +69,9 @@ deleted on purpose a week earlier. Before restoring or merging any learned row, 
 **reachability**, not counts: does the stored string appear in, or derive from, a real
 title in the consumer's corpus? If nothing can reach it, no lookup can ever hit it and
 its absence is a fix. A timestamp heuristic is not a substitute — it was tried and fired
-on 0 of the 4 rows, because `add_alias()` restamps `created_at` with now().
+on 0 of the 4 rows, because `add_alias()` used to restamp `created_at` with now()
+(fixed 2026-10-04, #22: re-recording now keeps the original `created_at`, but rows
+re-asserted before that still have the later date).
 
 When running that reachability check, **normalize whitespace before stripping
 boilerplate** (`" ".join(title.split())` first). Consumer titles come from PDFs and a
