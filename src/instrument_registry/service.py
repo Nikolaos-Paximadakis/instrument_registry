@@ -289,6 +289,57 @@ def refresh_gleif(*, db_path: str | Path | None = None) -> GleifRefreshResult:
     return GleifRefreshResult(linked=linked, skipped_blacklisted=skipped_blacklisted)
 
 
+def _clear_tombstone(
+    connection: sqlite3.Connection, table: str, isin: str, key_text: str
+) -> None:
+    """A deliberate re-add supersedes this copy's own record of deleting the
+    same key (#23). The other copy's tombstone, if it merges back in later,
+    is older than the fresh row's `created_at` and loses to it there."""
+    connection.execute(
+        "DELETE FROM learned_tombstones WHERE table_name = ? AND isin = ? AND key_text = ?",
+        (table, isin, key_text),
+    )
+
+
+def _delete_with_tombstone(
+    connection: sqlite3.Connection,
+    table: str,
+    key_column: str,
+    isin: str,
+    key_text: str,
+    reason: str | None,
+) -> None:
+    """Deletes one learned row and records the deletion in
+    `learned_tombstones`, so `--merge-learned` can tell it apart from a row
+    this copy never had (#23). The tombstone is written even when there was
+    no row to delete: removing a key is an assertion that it must not exist,
+    which is also how a cleanup made before tombstones existed gets
+    recorded. Re-deleting keeps the original `deleted_at`, for the same
+    reason `add_alias()` keeps `created_at`."""
+    row = connection.execute(
+        f"SELECT * FROM {table} WHERE isin = ? AND {key_column} = ?", (isin, key_text)
+    ).fetchone()
+    connection.execute(
+        f"DELETE FROM {table} WHERE isin = ? AND {key_column} = ?", (isin, key_text)
+    )
+    row_json = None
+    if row is not None:
+        row_json = json.dumps(
+            {k: row[k] for k in row.keys() if k != "alias_id"}, ensure_ascii=False
+        )
+    connection.execute(
+        """
+        INSERT INTO learned_tombstones
+            (table_name, isin, key_text, deleted_at, reason, row_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(table_name, isin, key_text) DO UPDATE SET
+            reason = COALESCE(excluded.reason, reason),
+            row_json = COALESCE(excluded.row_json, row_json)
+        """,
+        (table, isin, key_text, datetime.now(UTC).isoformat(), reason, row_json),
+    )
+
+
 def add_alias(
     isin: str,
     alias_text: str,
@@ -306,7 +357,9 @@ def add_alias(
     original `created_at`, which means "first learned", not "last
     re-asserted" (restamping it destroyed the evidence in a real incident,
     see #22). Silently a no-op for an unknown isin (FK constraint —
-    callers are expected to have already resolved the isin via a match)."""
+    callers are expected to have already resolved the isin via a match).
+    Clears any tombstone this copy holds for the same key (see
+    `remove_alias()`)."""
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
     try:
@@ -320,6 +373,7 @@ def add_alias(
             """,
             (isin, alias_text, source, confidence, now),
         )
+        _clear_tombstone(connection, "instrument_aliases", isin, alias_text)
         connection.commit()
     finally:
         connection.close()
@@ -343,7 +397,8 @@ def blacklist_lei(
     that other instruments legitimately point at.
 
     Re-blacklisting an existing pair refreshes `reason` but keeps the
-    original `created_at` (see `add_alias()`)."""
+    original `created_at` (see `add_alias()`). Clears any tombstone for
+    the pair, as `add_alias()` does."""
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
     try:
@@ -356,6 +411,7 @@ def blacklist_lei(
             """,
             (isin, lei, reason, now),
         )
+        _clear_tombstone(connection, "lei_blacklist", isin, lei)
         connection.execute(
             "UPDATE instruments SET lei = NULL, updated_at = ? WHERE isin = ? AND lei = ?",
             (now, isin, lei),
@@ -369,16 +425,21 @@ def remove_alias(
     isin: str,
     alias_text: str,
     *,
+    reason: str | None = None,
     db_path: str | Path | None = None,
 ) -> None:
     """Undoes `add_alias()` — deletes the `(isin, alias_text)` row, e.g. to
-    correct a mistaken human/AI title-merge decision. No-op if no such row
-    exists."""
+    correct a mistaken human/AI title-merge decision, and records the
+    deletion as a tombstone so `--merge-learned` from a copy that still has
+    the row can't quietly reinstate it (#23). `reason` should say why
+    (e.g. "corrupted by an unbounded boilerplate regex"). The tombstone is
+    written even if no such row exists here — that is how to record a
+    cleanup another copy hasn't had yet. Re-adding the alias later clears
+    it."""
     connection = connect(db_path)
     try:
-        connection.execute(
-            "DELETE FROM instrument_aliases WHERE isin = ? AND alias_text = ?",
-            (isin, alias_text),
+        _delete_with_tombstone(
+            connection, "instrument_aliases", "alias_text", isin, alias_text, reason
         )
         connection.commit()
     finally:
@@ -389,19 +450,17 @@ def unblacklist_lei(
     isin: str,
     lei: str,
     *,
+    reason: str | None = None,
     db_path: str | Path | None = None,
 ) -> None:
     """Undoes `blacklist_lei()` — deletes the `(isin, lei)` row, e.g. to
-    correct a mistaken blacklist entry. Does not relink the LEI itself:
-    the next `refresh_gleif()` run picks it up naturally, since that
-    function only re-queries instruments with `lei IS NULL`. No-op if no
-    such row exists."""
+    correct a mistaken blacklist entry, and records a tombstone exactly as
+    `remove_alias()` does. Does not relink the LEI itself: the next
+    `refresh_gleif()` run picks it up naturally, since that function only
+    re-queries instruments with `lei IS NULL`."""
     connection = connect(db_path)
     try:
-        connection.execute(
-            "DELETE FROM lei_blacklist WHERE isin = ? AND lei = ?",
-            (isin, lei),
-        )
+        _delete_with_tombstone(connection, "lei_blacklist", "lei", isin, lei, reason)
         connection.commit()
     finally:
         connection.close()
@@ -411,18 +470,20 @@ def remove_title_exclusion(
     isin: str,
     title_text: str,
     *,
+    reason: str | None = None,
     db_path: str | Path | None = None,
 ) -> None:
     """Undoes `exclude_title_match()` — deletes the `(isin, title_text)`
-    row, e.g. to correct a mistaken exclusion. `title_text` is normalized
+    row, e.g. to correct a mistaken exclusion, and records a tombstone
+    exactly as `remove_alias()` does. `title_text` is normalized
     (stripped + casefolded) the same way `exclude_title_match()` stores
     it, so the same original string (regardless of casing/whitespace)
-    removes the same row. No-op if no such row exists."""
+    removes the same row."""
     connection = connect(db_path)
     try:
-        connection.execute(
-            "DELETE FROM title_isin_exclusions WHERE isin = ? AND title_text = ?",
-            (isin, title_text.strip().casefold()),
+        _delete_with_tombstone(
+            connection, "title_isin_exclusions", "title_text",
+            isin, title_text.strip().casefold(), reason,
         )
         connection.commit()
     finally:
@@ -450,7 +511,8 @@ def exclude_title_match(
     `created_at` (see `add_alias()`). Note `isin`'s FK reference isn't
     actually enforced (this connection never sets `PRAGMA foreign_keys =
     ON`, same as `add_alias()`) — a typo'd isin is stored as-is rather
-    than rejected, so double-check the isin came from a real match."""
+    than rejected, so double-check the isin came from a real match.
+    Clears any tombstone for the pair, as `add_alias()` does."""
     now = datetime.now(UTC).isoformat()
     normalized_title = title_text.strip().casefold()
     connection = connect(db_path)
@@ -464,6 +526,7 @@ def exclude_title_match(
             """,
             (isin, normalized_title, reason, now),
         )
+        _clear_tombstone(connection, "title_isin_exclusions", isin, normalized_title)
         connection.commit()
     finally:
         connection.close()
@@ -471,8 +534,9 @@ def exclude_title_match(
 
 def export_snapshot(*, db_path: str | Path | None = None) -> bytes:
     """A transactionally-consistent snapshot of the entire cache DB
-    (`instruments`, `entities`, and the three locally-learned tables —
-    `instrument_aliases`, `lei_blacklist`, `title_isin_exclusions`),
+    (`instruments`, `entities`, and the locally-learned tables —
+    `instrument_aliases`, `lei_blacklist`, `title_isin_exclusions`,
+    `learned_tombstones`),
     serialized to bytes. For a consumer that runs this package against a
     long-lived deployed cache (e.g. a route that calls `add_alias()`/
     `exclude_title_match()` live) and wants a way to pull that learned
@@ -528,6 +592,7 @@ def import_snapshot(
                     for table in (
                         "instruments", "entities", "instrument_aliases",
                         "lei_blacklist", "title_isin_exclusions",
+                        "learned_tombstones",
                     )
                 ]
                 if any(counts):

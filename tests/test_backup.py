@@ -68,7 +68,7 @@ def test_manifest_records_verifiable_hash_and_row_counts(tmp_path):
     assert backup_mod._sha256(snapshot_dir / "instrument_registry.db") == entry["sha256"]
     assert entry["row_counts"] == {
         "instruments": 1, "entities": 0, "instrument_aliases": 1,
-        "lei_blacklist": 0, "title_isin_exclusions": 0,
+        "lei_blacklist": 0, "title_isin_exclusions": 0, "learned_tombstones": 0,
     }
 
 

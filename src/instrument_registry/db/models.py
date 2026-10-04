@@ -104,6 +104,31 @@ CREATE TABLE IF NOT EXISTS title_isin_exclusions (
     created_at TEXT NOT NULL,
     PRIMARY KEY (isin, title_text)
 );
+
+-- A deletion from one of the three learned tables above, recorded as a row
+-- rather than left as an absence (#23). Without it, a row present in one
+-- copy of this cache and missing from another reads identically whether the
+-- second copy never received it or deliberately deleted it, so
+-- --merge-learned could only reinstate a cleanup — which it nearly did on
+-- 2026-08-16. Written by remove_alias()/unblacklist_lei()/
+-- remove_title_exclusion(), cleared by re-adding the same key, and merged
+-- like any other learned row. When a key has both a tombstone and a live
+-- row, the newer of `deleted_at` and the row's `created_at` wins: a
+-- re-add after a deletion creates a fresh row stamped now(), while a stale
+-- copy's row keeps its original, older date. `key_text` is the table's
+-- second key column (alias_text / lei / title_text, the last normalized as
+-- stored). `row_json` holds the deleted row, so a deletion — including one
+-- carried in by a merge — can be undone; NULL when nothing was there to
+-- delete. Itself learned and irreplaceable: refreshes never write here.
+CREATE TABLE IF NOT EXISTS learned_tombstones (
+    table_name TEXT NOT NULL,
+    isin       TEXT NOT NULL,
+    key_text   TEXT NOT NULL,
+    deleted_at TEXT NOT NULL,
+    reason     TEXT,
+    row_json   TEXT,
+    PRIMARY KEY (table_name, isin, key_text)
+);
 """
 
 

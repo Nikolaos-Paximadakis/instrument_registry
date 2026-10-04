@@ -71,12 +71,22 @@ REFRESHES = (
 #: table". Reported separately from the upstream ones because a drop in
 #: these is a data-loss incident, while a drop in `instruments` is just
 #: ATHEX delisting something.
-LEARNED_TABLES = ("instrument_aliases", "lei_blacklist", "title_isin_exclusions")
+#: `learned_tombstones` counts too: a deletion record is as unrecoverable
+#: as the row it deleted (#23).
+LEARNED_TABLES = (
+    "instrument_aliases", "lei_blacklist", "title_isin_exclusions", "learned_tombstones",
+)
 
 UPSTREAM_TABLES = ("instruments", "entities")
 
 
 def _count(connection: sqlite3.Connection, table: str) -> int:
+    # This connection is read-only, so a cache no newer code has opened yet
+    # can lack a table added since; it has no rows in it either way.
+    if not connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,)).fetchone():
+        return 0
     return connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
 

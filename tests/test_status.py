@@ -289,3 +289,19 @@ def test_an_explicit_backup_root_beats_the_env_var(tmp_path, monkeypatch):
 
     assert report["backup"] is not None
     assert report["problems"] == []
+
+
+def test_status_reads_a_cache_that_predates_the_tombstone_table(tmp_path):
+    # Same read-only constraint as above, for a table rather than a column:
+    # a deployed cache no #23-aware code has opened has no
+    # learned_tombstones yet, and --status must not choke on that.
+    db_path = tmp_path / "registry.db"
+    _seed(db_path)
+    raw = sqlite3.connect(db_path)
+    raw.execute("DROP TABLE learned_tombstones")
+    raw.commit()
+    raw.close()
+
+    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "nowhere")
+
+    assert report["tables"]["learned_tombstones"] == 0
