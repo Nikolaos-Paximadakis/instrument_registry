@@ -1050,3 +1050,61 @@ def test_connect_adds_last_seen_in_feed_to_an_existing_cache_and_says_so(tmp_pat
 
     assert "instruments.last_seen_in_feed" in capsys.readouterr().err
     assert lookup_by_isin(TEN[0], db_path=db_path).last_seen_in_feed is None
+
+
+def _backdate(db_path, table, isin):
+    connection = connect(db_path)
+    connection.execute(
+        f"UPDATE {table} SET created_at = ? WHERE isin = ?", ("2026-01-01T00:00:00+00:00", isin)
+    )
+    connection.commit()
+    connection.close()
+
+
+def _created_at(db_path, table, isin):
+    connection = connect(db_path)
+    (value,) = connection.execute(
+        f"SELECT created_at FROM {table} WHERE isin = ?", (isin,)
+    ).fetchone()
+    connection.close()
+    return value
+
+
+def test_add_alias_keeps_the_original_created_at_when_re_asserted(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    add_alias("GRS332003008", "ALIAS ONE", source="first-pass", db_path=db_path)
+    _backdate(db_path, "instrument_aliases", "GRS332003008")
+
+    add_alias("GRS332003008", "ALIAS ONE", source="second-pass", confidence=0.9, db_path=db_path)
+
+    [alias] = list_aliases("GRS332003008", db_path=db_path)
+    assert alias.created_at == "2026-01-01T00:00:00+00:00"
+    assert alias.source == "second-pass"
+    assert alias.confidence == 0.9
+
+
+def test_blacklist_lei_keeps_the_original_created_at_when_re_asserted(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="BG1100003166", name="MERMEREN KOMBINAT AD")
+    blacklist_lei("BG1100003166", "M6AD1Y1KW32H8THQ6F76", reason="first", db_path=db_path)
+    _backdate(db_path, "lei_blacklist", "BG1100003166")
+
+    blacklist_lei("BG1100003166", "M6AD1Y1KW32H8THQ6F76", reason="second", db_path=db_path)
+
+    [entry] = list_blacklisted(isin="BG1100003166", db_path=db_path)
+    assert entry.created_at == "2026-01-01T00:00:00+00:00"
+    assert entry.reason == "second"
+
+
+def test_exclude_title_match_keeps_the_original_created_at_when_re_asserted(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS518003009", name="SOME COMPANY")
+    exclude_title_match("GRS518003009", "SOME TITLE", reason="first", db_path=db_path)
+    _backdate(db_path, "title_isin_exclusions", "GRS518003009")
+
+    exclude_title_match("GRS518003009", "SOME TITLE", reason="second", db_path=db_path)
+
+    [exclusion] = list_title_exclusions("GRS518003009", db_path=db_path)
+    assert exclusion.created_at == "2026-01-01T00:00:00+00:00"
+    assert exclusion.reason == "second"

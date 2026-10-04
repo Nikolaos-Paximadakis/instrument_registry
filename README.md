@@ -123,6 +123,14 @@ is unverified — nothing to fetch yet either way.
   two spelling variants as the same instrument, a *future* occurrence of
   that exact string resolves immediately, without needing to re-run
   fuzzy-matching/LLM review to rediscover the same match again.
+- **Re-recording an existing learned row keeps its `created_at`.**
+  `add_alias()`, `blacklist_lei()` and `exclude_title_match()` all upsert,
+  so calling one again for an existing key refreshes `source`/
+  `confidence`/`reason`, but `created_at` stays "when this was first
+  learned". Until 2026-10-04 all three restamped it with now(), which
+  wiped the evidence in a real incident: four aliases re-added on
+  2026-08-16 came out looking brand new, and a timestamp safeguard for
+  `--merge-learned` fired on 0 of those 4 rows (#22).
 - `exclude_title_match(isin, title_text, reason=None, db_path=None) -> None`
   — the inverse of `add_alias()`: records that `title_text` must never
   fuzzy-match `isin` again, even if its computed ratio would otherwise
