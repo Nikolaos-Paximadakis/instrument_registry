@@ -364,6 +364,14 @@ history:
   `instrument_aliases`/`lei_blacklist`/`title_isin_exclusions` are
   recoverable from nowhere. Added after four learned aliases went missing
   between two backups (restored 2026-08-16) with nothing watching the count.
+  It reads backups from `--backup-root`, else
+  `$INSTRUMENT_REGISTRY_BACKUP_ROOT`, else the developer-machine default —
+  the same resolution `--backup` uses, so set the env var once in an
+  environment whose disk doesn't look like this machine's. Until
+  2026-10-04 there was no env var, and a deployed container always failed
+  this check against a path it could never have (#21). A missing backup
+  stays a problem wherever the root points: the env var relocates the
+  check, it doesn't silence it.
 
 A NULL `lei` is reported but never counted as a problem — plenty of
 smaller Greek issuers have no registered LEI at all, and `refresh_gleif()`

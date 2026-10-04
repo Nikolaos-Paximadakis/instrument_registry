@@ -245,3 +245,47 @@ def test_status_reads_a_cache_that_predates_the_column_without_migrating_it(tmp_
     columns = {r[1] for r in raw.execute("PRAGMA table_info(instruments)")}
     raw.close()
     assert "last_seen_in_feed" not in columns
+
+
+def test_backup_root_env_var_points_backup_and_status_at_the_same_place(tmp_path, monkeypatch):
+    # A deployed container can't have the developer machine's DEFAULT_ROOT,
+    # so --status there always reported "no backup found" (#21). One env var
+    # has to steer both commands, or they disagree about where backups live.
+    db_path = tmp_path / "registry.db"
+    _seed(db_path)
+    _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
+    monkeypatch.setenv("INSTRUMENT_REGISTRY_BACKUP_ROOT", str(tmp_path / "volume-backups"))
+
+    backup_mod.backup(db_path=db_path, keep=30)
+    report = status_mod.status(db_path=db_path)
+
+    assert (tmp_path / "volume-backups" / "snapshots" / "latest" / "MANIFEST.json").exists()
+    assert report["backup_root"] == str(tmp_path / "volume-backups")
+    assert report["backup"] is not None
+    assert report["problems"] == []
+
+
+def test_backup_root_env_var_still_reports_a_missing_backup_there(tmp_path, monkeypatch):
+    # The env var relocates the check; it doesn't silence it.
+    db_path = tmp_path / "registry.db"
+    _seed(db_path)
+    _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
+    monkeypatch.setenv("INSTRUMENT_REGISTRY_BACKUP_ROOT", str(tmp_path / "empty"))
+
+    report = status_mod.status(db_path=db_path)
+
+    assert report["backup"] is None
+    assert any(f"no backup found under {tmp_path / 'empty'}" in p for p in report["problems"])
+
+
+def test_an_explicit_backup_root_beats_the_env_var(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _seed(db_path)
+    _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
+    backup_mod.backup(root=tmp_path / "dest", db_path=db_path, keep=30)
+    monkeypatch.setenv("INSTRUMENT_REGISTRY_BACKUP_ROOT", str(tmp_path / "empty"))
+
+    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "dest")
+
+    assert report["backup"] is not None
+    assert report["problems"] == []

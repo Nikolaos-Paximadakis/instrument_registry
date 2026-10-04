@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -50,6 +51,21 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: Point --root at /mnt/d/... (the Windows host disk) for a copy that
 #: outlives the VM.
 DEFAULT_ROOT = Path("/home/dev-ubuntu/data/backup/instrument_registry")
+
+#: Overrides DEFAULT_ROOT for both `--backup` and `--status`. DEFAULT_ROOT
+#: is a path on the developer machine and cannot exist inside a deployed
+#: container, so without this `--status` there always reported "no backup
+#: found" (#21). Setting it once, to a path on the persistent volume, makes
+#: the two commands agree on where backups live in that environment.
+BACKUP_ROOT_ENV = "INSTRUMENT_REGISTRY_BACKUP_ROOT"
+
+
+def default_root() -> Path:
+    """`$INSTRUMENT_REGISTRY_BACKUP_ROOT` if set, else DEFAULT_ROOT. Read at
+    call time, not import time, so the environment can change under a
+    long-lived process (and tests can monkeypatch it)."""
+    value = os.environ.get(BACKUP_ROOT_ENV)
+    return Path(value) if value else DEFAULT_ROOT
 
 DEFAULT_KEEP = 30
 
@@ -152,12 +168,14 @@ separately. This backs up the *local* cache only.
 
 
 def backup(
-    root: Path = DEFAULT_ROOT,
+    root: Path | None = None,
     db_path: Path | str | None = None,
     repo_root: Path = REPO_ROOT,
     keep: int = DEFAULT_KEEP,
 ) -> dict:
-    """Runs one backup. Returns the manifest dict that was written."""
+    """Runs one backup. Returns the manifest dict that was written. `root`
+    defaults to `default_root()`."""
+    root = Path(root) if root is not None else default_root()
     source = Path(db_path) if db_path is not None else Path(DEFAULT_DB_PATH)
 
     root.mkdir(parents=True, exist_ok=True)
@@ -222,16 +240,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Back up instrument_registry's local cache DB to a local "
                     "staging area for manual upload to cloud storage.")
-    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
-                        help=f"staging area (default: {DEFAULT_ROOT}). Point this at a "
+    parser.add_argument("--root", type=Path, default=None,
+                        help=f"staging area (default: ${BACKUP_ROOT_ENV}, else "
+                             f"{DEFAULT_ROOT}). Point this at a "
                              f"path on the Windows host disk (e.g. /mnt/d/...) for a "
                              f"copy that survives the WSL VM being reset.")
     parser.add_argument("--keep", type=int, default=DEFAULT_KEEP,
                         help=f"versioned snapshots to retain (default: {DEFAULT_KEEP})")
     args = parser.parse_args(argv)
+    root = args.root if args.root is not None else default_root()
 
     try:
-        manifest = backup(root=args.root, keep=args.keep)
+        manifest = backup(root=root, keep=args.keep)
     except Exception as e:
         print(f"instrument_registry.backup: FAILED — {e}", file=sys.stderr)
         return 1
@@ -242,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     entry = manifest["snapshot"]["instrument_registry.db"]
-    print(f"instrument_registry.backup: snapshot {manifest['created_utc']} -> {args.root}")
+    print(f"instrument_registry.backup: snapshot {manifest['created_utc']} -> {root}")
     print(f"  instrument_registry.db  {entry['bytes']/1e6:.3f} MB  sha256={entry['sha256'][:12]}...")
     print(f"  rows: {entry['row_counts']}")
     if manifest["pruned"]:
