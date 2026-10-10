@@ -189,8 +189,33 @@ def refresh_athex_bonds(
     as for any instrument."""
     athex_bonds = fetch_athex_bonds()
     resolved, unresolved = _resolve_bond_isins(athex_bonds, fetch_firds_athens_bonds())
-    count = _upsert_feed(resolved, "bond", db_path=db_path, allow_drop=allow_drop)
+    # The upsert overwrites `instrument_type`, so an ISIN already cached as
+    # something else would be silently relabelled a bond. Skip and report it.
+    taken = _isins_held_as_another_type(resolved, "bond", db_path=db_path)
+    unresolved += [bond.symbol for bond in resolved if bond.isin in taken]
+    resolved = [bond for bond in resolved if bond.isin not in taken]
+    try:
+        count = _upsert_feed(resolved, "bond", db_path=db_path, allow_drop=allow_drop)
+    except FeedShrinkError as error:
+        # The guard only sees what was resolved, so a FIRDS-side failure
+        # looks like a delisting; say which bonds fell out.
+        raise FeedShrinkError(
+            f"{error} ({len(unresolved)} ATHEX bond(s) could not be resolved to one "
+            f"ISIN and were left out: {', '.join(unresolved) or 'none'})"
+        ) from error
     return BondRefreshResult(upserted=count, unresolved=tuple(unresolved))
+
+
+def _isins_held_as_another_type(
+    products: list[_ResolvedBond], instrument_type: str, *, db_path: str | Path | None
+) -> set[str]:
+    connection = connect(db_path)
+    try:
+        return {
+            row[0] for row in connection.execute("SELECT isin FROM instruments WHERE instrument_type IS NOT ?", (instrument_type,))
+        } & {product.isin for product in products}
+    finally:
+        connection.close()
 
 
 def _resolve_bond_isins(
