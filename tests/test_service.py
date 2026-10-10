@@ -1352,3 +1352,48 @@ def test_firds_fetch_retries_a_gateway_timeout_but_not_a_bad_query(monkeypatch):
     with pytest.raises(httpx.HTTPStatusError):
         esma._get_page(down, {})
     assert down.calls == 3
+
+
+def test_refresh_athex_bonds_will_not_relabel_an_isin_cached_as_a_stock(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_stocks",
+        lambda: [AthexStock(isin="GRC0000000A1", symbol="AEGN", issuer="AEGEAN AIRLINES S.A.",
+                            issuer_full_name="AEGEAN AIRLINES S.A.", market="MAIN MARKET")],
+    )
+    refresh_athex(db_path=db_path)
+    _patch_bond_sources(monkeypatch, [_athex_bond(), _athex_bond("OK1")],
+                        [_firds_bond(), _firds_bond("GRC000000OK1", "OK1")])
+
+    result = refresh_athex_bonds(db_path=db_path)
+
+    assert result.upserted == 1 and result.unresolved == ("AEGNB2",)
+    assert lookup_by_isin("GRC0000000A1", db_path=db_path).instrument_type == "stock"
+    assert lookup_by_isin("GRC0000000A1", db_path=db_path).source == "athex"
+
+
+def test_a_refused_bond_refresh_names_the_bonds_that_fell_out(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _patch_bond_sources(monkeypatch, [_athex_bond(), _athex_bond("OK1")],
+                        [_firds_bond(), _firds_bond("GRC000000OK1", "OK1")])
+    refresh_athex_bonds(db_path=db_path)
+    _patch_bond_sources(monkeypatch, [_athex_bond(), _athex_bond("OK1")], [])
+
+    with pytest.raises(FeedShrinkError, match="AEGNB2, OK1"):
+        refresh_athex_bonds(db_path=db_path)
+
+
+def test_firds_fetch_fails_loudly_when_paging_loses_or_repeats_rows(monkeypatch):
+    from instrument_registry.collector import esma
+
+    def page(docs, found):
+        return lambda client, params: {"docs": docs, "numFound": found}
+
+    doc = {"id": "1", "isin": "X", "gnr_full_name": "S", "mic": "XATH"}
+    monkeypatch.setattr(esma, "_get_page", page([doc, doc], 2))  # repeated row
+    with pytest.raises(RuntimeError, match="paging"):
+        esma.fetch_firds_athens_bonds()
+    # an empty page arrives before numFound is reached
+    monkeypatch.setattr(esma, "_get_page", lambda c, p: {"docs": [doc] if p["start"] == 0 else [], "numFound": 3})
+    with pytest.raises(RuntimeError, match="paging"):
+        esma.fetch_firds_athens_bonds()

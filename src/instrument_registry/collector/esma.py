@@ -77,6 +77,15 @@ def fetch_firds_athens_bonds(*, timeout: float = 60.0) -> list[FirdsBond]:
             if not result["docs"] or len(docs) >= result["numFound"]:
                 break
 
+    # Unsorted pages carry no ordering guarantee, so a second page could
+    # repeat or skip rows. Invisible at ~200 rows (one page), but a count
+    # or id mismatch must fail loudly rather than yield a partial list.
+    if len(docs) != result["numFound"] or len({doc["id"] for doc in docs}) != len(docs):
+        raise RuntimeError(
+            f"FIRDS paging returned {len(docs)} rows "
+            f"({len({doc['id'] for doc in docs})} distinct) for numFound={result['numFound']}"
+        )
+
     return [
         FirdsBond(
             isin=doc["isin"],

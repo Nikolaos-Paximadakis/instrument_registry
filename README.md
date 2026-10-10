@@ -87,7 +87,8 @@ feed's shape is still unverified — nothing to fetch yet.
   the ATHEX `Symbol`), and the maturity date must agree. A bond with no
   match, or with more than one candidate ISIN, is **not written** and is
   returned in `.unresolved` (the CLI prints it to stderr) — never
-  guessed. Also fills `cfi_code` and `currency` from FIRDS. It does *not*
+  guessed. An ISIN already cached under another type (say a stock) is also
+  skipped and reported there, rather than relabelled a bond. Also fills `cfi_code` and `currency` from FIRDS. It does *not*
   write `lei`: FIRDS carries one, but `refresh_gleif()` owns linking, the
   blacklist and the `entities` row, so bonds get theirs from the same
   place as stocks. Same feed-membership stamp and shrink guard as the
