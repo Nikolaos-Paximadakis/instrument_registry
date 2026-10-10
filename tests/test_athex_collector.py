@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from instrument_registry.collector.athex import fetch_athex_etfs, fetch_athex_stocks
+from instrument_registry.collector.athex import fetch_athex_bonds, fetch_athex_etfs, fetch_athex_stocks
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("INSTRUMENT_REGISTRY_LIVE_TESTS"),
@@ -37,3 +37,12 @@ def test_fetch_athex_etfs_returns_real_listed_etfs_with_an_isin():
         assert etf.isin.startswith("GR")
         assert etf.symbol
         assert etf.issuer
+
+
+def test_fetch_athex_bonds_returns_real_bonds_that_carry_no_isin():
+    bonds = fetch_athex_bonds()
+
+    assert len(bonds) > 20
+    assert len({bond.symbol for bond in bonds}) == len(bonds)
+    assert all(bond.issuer and bond.maturity.year >= 2026 for bond in bonds)
+    assert not hasattr(bonds[0], "isin"), "ATHEX publishes bonds without an ISIN"

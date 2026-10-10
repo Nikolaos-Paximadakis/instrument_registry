@@ -1,6 +1,11 @@
 import sys
 
-from instrument_registry.service import refresh_athex, refresh_athex_etfs, refresh_gleif
+from instrument_registry.service import (
+    refresh_athex,
+    refresh_athex_bonds,
+    refresh_athex_etfs,
+    refresh_gleif,
+)
 
 
 def main() -> None:
@@ -10,6 +15,15 @@ def main() -> None:
     elif "--refresh-athex-etfs" in sys.argv:
         count = refresh_athex_etfs(allow_drop="--allow-drop" in sys.argv)
         print(f"instrument_registry: upserted {count} ATHEX-sourced ETFs.")
+    elif "--refresh-athex-bonds" in sys.argv:
+        result = refresh_athex_bonds(allow_drop="--allow-drop" in sys.argv)
+        print(f"instrument_registry: upserted {result.upserted} ATHEX-listed bonds.")
+        if result.unresolved:
+            print(
+                f"instrument_registry: {len(result.unresolved)} bond(s) NOT written, no single "
+                f"ISIN found in ESMA FIRDS: {', '.join(result.unresolved)}",
+                file=sys.stderr,
+            )
     elif "--refresh-gleif" in sys.argv:
         result = refresh_gleif()
         print(f"instrument_registry: linked {result.linked} instruments to a GLEIF entity (LEI).")
@@ -31,6 +45,7 @@ def main() -> None:
         raise SystemExit(
             "Usage: python -m instrument_registry "
             "--refresh-athex [--allow-drop] | --refresh-athex-etfs [--allow-drop] | "
+            "--refresh-athex-bonds [--allow-drop] | "
             "--refresh-gleif | "
             "--backup | --status | --merge-learned <snapshot.db>"
         )

@@ -22,20 +22,19 @@ wording/instrument" instead of relying on string similarity forever.
 
 ## Phase 1 scope
 
-Greek stocks (and, since 2026-08-09, ETFs) only, proven end-to-end,
-before expanding to other instrument types. Bonds are a materially
-harder sourcing problem than either: ATHEX's own `bonds_en.json` feed
-has no ISIN field at all (confirmed live 2026-08-09; it's keyed by
-`_productId`/`Symbol` instead), so bonds can't slot into this package's
-ISIN-keyed schema without a separate ISIN source — no single free
-public registry does that the way ATHEX/GLEIF cover stocks/entities.
-Warrants returned 0 live rows on the same date, so their feed's shape
-is unverified — nothing to fetch yet either way.
+Greek stocks, with ETFs (since 2026-08-09) and ATHEX-listed bonds (since
+2026-10-10) alongside. Bonds were the hard one: ATHEX's own
+`bonds_en.json` has no ISIN field at all (it's keyed by
+`_productId`/`Symbol`), and matching on issuer name would bring back the
+fuzzy matching this package exists to replace. The ISIN comes from ESMA's
+FIRDS register instead — see `refresh_athex_bonds()` and "Data sources".
+Warrants returned 0 live rows when re-checked 2026-10-10, so their
+feed's shape is still unverified — nothing to fetch yet.
 
 ## What It Owns
 
-- Fetching ATHEX's current listed-stocks and listed-ETFs lists (ISIN,
-  symbol, issuer name)
+- Fetching ATHEX's current listed-stocks, listed-ETFs and listed-bonds
+  lists (ISIN, symbol, issuer name; a bond's ISIN comes from ESMA FIRDS)
 - Looking up the LEI/legal entity behind an instrument's ISIN, via GLEIF's
   free live API
 - Local SQLite cache of both (`entities` + `instruments`), plus local
@@ -81,6 +80,25 @@ is unverified — nothing to fetch yet either way.
   neither refresh judges the other's rows, since it never saw that feed.
   With one ETF listed, its delisting is an empty payload, which always
   needs `allow_drop`.
+- `refresh_athex_bonds(db_path=None, allow_drop=False) -> BondRefreshResult` —
+  fetch ATHEX's listed bonds and upsert them (`instrument_type='bond'`,
+  `source='athex+esma_firds'`). ATHEX gives no ISIN, so each bond is
+  resolved against ESMA FIRDS by exact ticker (`gnr_full_name` there *is*
+  the ATHEX `Symbol`), and the maturity date must agree. A bond with no
+  match, or with more than one candidate ISIN, is **not written** and is
+  returned in `.unresolved` (the CLI prints it to stderr) — never
+  guessed. Also fills `cfi_code` and `currency` from FIRDS. It does *not*
+  write `lei`: FIRDS carries one, but `refresh_gleif()` owns linking, the
+  blacklist and the `entities` row, so bonds get theirs from the same
+  place as stocks. Same feed-membership stamp and shrink guard as the
+  others, for bonds only; a run where FIRDS resolves nothing is an empty
+  payload and trips the guard rather than reading as a mass delisting.
+  **Bonds are excluded from `fuzzy_match_title*()` unless
+  `instrument_type='bond'` is passed.** A bond carries its issuer's name,
+  so it would tie that issuer's stock at ratio 1.0 for every company-name
+  title and crowd the real match out of a caller's top N — and the
+  consumer (`pothen_eshes`) calls with no type filter. `lookup_by_isin()`
+  and `lookup_by_symbol()` return bonds normally.
 - `refresh_gleif(db_path=None) -> GleifRefreshResult` — look up and link the
   LEI for any cached instrument that doesn't have one yet. Returns
   `.linked` and `.skipped_blacklisted`; the second exists because `linked`
@@ -234,6 +252,7 @@ what it did until 2026-08-17.
 ```bash
 python -m instrument_registry --refresh-athex          # [--allow-drop], see refresh_athex()
 python -m instrument_registry --refresh-athex-etfs
+python -m instrument_registry --refresh-athex-bonds    # [--allow-drop]; prints unresolved symbols
 python -m instrument_registry --refresh-gleif
 python -m instrument_registry --backup
 python -m instrument_registry --status
@@ -415,10 +434,23 @@ re-queries those every run by design.
   that blocks a plain/generic HTTP client; `collector/athex.py` uses a
   browser-header + HTTP/2 client to get through (confirmed live
   2026-07-19), the same trick `pothen_eshes.http_client` uses for
-  hellenicparliament.gr's Akamai protection. Sibling `bonds_en.json`/
-  `warrants_en.json` feeds exist too, but aren't fetched: bonds has no
-  ISIN field at all (confirmed live 2026-08-09), and warrants returned
-  0 rows on the same date — see the Phase 1 scope note above.
+  hellenicparliament.gr's Akamai protection. `bonds_en.json` is fetched
+  too but has no ISIN field (59 rows, re-confirmed 2026-10-10); it
+  carries `Maturity`, which is what makes the FIRDS join checkable.
+  `warrants_en.json` is a sibling feed that returned 0 rows on the same
+  date, so isn't fetched.
+- **ESMA FIRDS**: `https://registers.esma.europa.eu/solr/esma_registers_firds/select`
+  — the EU register of every instrument admitted to an EU venue, used
+  only for bond ISINs (`collector/esma.py`). It is the register's own
+  web-UI Solr endpoint, not a documented API, so it can change without
+  notice; the live test (`tests/test_esma_collector.py`) is what would
+  notice. No Cloudflare problem — plain HTTP works. Gotchas, all hit
+  live 2026-10-10: a bond on ENAX (EN.A. Growth, e.g. `ROENB1`) is not
+  on mic `XATH`, so filtering on XATH alone silently loses it; one
+  instrument can have several FIRDS records with the same ISIN; terminated
+  instruments stay in the register (`status` `TERM`); and `sort=id asc`
+  timed out (504) on 1 of 4 calls where the unsorted query never did, so
+  the fetch doesn't sort and retries a 5xx.
 - **GLEIF**: `https://api.gleif.org/api/v1/lei-records?filter[isin]=...`
   — GLEIF's free, no-auth, live search API, queried per-ISIN rather than
   bulk-downloading their full global "Golden Copy" file (Phase 1 only

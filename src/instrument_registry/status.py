@@ -65,6 +65,11 @@ REFRESHES = (
         "instrument_type": "etf",
         "backfills": ("symbol",),
     },
+    {
+        "command": "--refresh-athex-bonds",
+        "instrument_type": "bond",
+        "backfills": ("symbol", "cfi_code", "currency"),
+    },
 )
 
 #: Locally-learned and irreplaceable — see CLAUDE.md's "two kinds of

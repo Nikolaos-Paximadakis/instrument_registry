@@ -13,11 +13,14 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from instrument_registry.collector.athex import (
+    AthexBond,
     AthexEtf,
     AthexStock,
+    fetch_athex_bonds,
     fetch_athex_etfs,
     fetch_athex_stocks,
 )
+from instrument_registry.collector.esma import FirdsBond, fetch_firds_athens_bonds
 from instrument_registry.collector.gleif import lookup_lei_by_isin
 from instrument_registry.db.session import connect
 
@@ -81,6 +84,29 @@ class GleifRefreshResult:
     skipped_blacklisted: int
 
 
+@dataclass(frozen=True, slots=True)
+class BondRefreshResult:
+    """What a `refresh_athex_bonds()` run did. `unresolved` lists the ATHEX
+    symbols that were *not* written because no single ISIN could be
+    established for them — a bond is skipped rather than guessed, so a
+    non-empty list is the thing to look at."""
+    upserted: int
+    unresolved: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedBond:
+    """An ATHEX bond whose ISIN has been established from FIRDS; shaped
+    like `AthexStock`/`AthexEtf` plus the fields only FIRDS supplies."""
+    isin: str
+    symbol: str
+    issuer: str
+    issuer_full_name: str
+    cfi_code: str | None
+    currency: str | None
+    source: str = "athex+esma_firds"
+
+
 class FeedShrinkError(RuntimeError):
     """A refresh refused a payload that would read as a mass delisting.
 
@@ -140,8 +166,67 @@ def refresh_athex_etfs(*, db_path: str | Path | None = None, allow_drop: bool = 
     return _upsert_feed(etfs, "etf", db_path=db_path, allow_drop=allow_drop)
 
 
+def refresh_athex_bonds(
+    *, db_path: str | Path | None = None, allow_drop: bool = False
+) -> BondRefreshResult:
+    """Fetch ATHEX's listed bonds and upsert them into `instruments` with
+    `instrument_type='bond'`. ATHEX's bond feed has no ISIN, so each bond
+    is resolved against ESMA's FIRDS register instead (`collector/esma.py`)
+    by an exact join on ticker, confirmed by the maturity date agreeing.
+    A bond with no match, or whose symbol and maturity fit more than one
+    ISIN, is **not written** and comes back in `unresolved` — a guess here
+    would put a wrong ISIN under a real name, which is the failure this
+    package exists to prevent.
+
+    Same upsert semantics, feed-membership stamp and shrink guard as
+    `refresh_athex()`, scoped to bonds. Also fills `cfi_code` and
+    `currency` from FIRDS (never clobbering an existing value with NULL).
+    It does not write `lei`: `refresh_gleif()` links that, and owns the
+    blacklist and the `entities` row the link points at.
+
+    Bonds are left out of `fuzzy_match_title*()` unless asked for with
+    `instrument_type='bond'` — see there. Lookup by ISIN or symbol works
+    as for any instrument."""
+    athex_bonds = fetch_athex_bonds()
+    resolved, unresolved = _resolve_bond_isins(athex_bonds, fetch_firds_athens_bonds())
+    count = _upsert_feed(resolved, "bond", db_path=db_path, allow_drop=allow_drop)
+    return BondRefreshResult(upserted=count, unresolved=tuple(unresolved))
+
+
+def _resolve_bond_isins(
+    athex_bonds: list[AthexBond], firds_bonds: list[FirdsBond]
+) -> tuple[list[_ResolvedBond], list[str]]:
+    """Join on ticker, then require the maturity date to agree. Terminated
+    FIRDS records are ignored, and several records for one ISIN count as
+    one. Exactly one distinct ISIN must survive; zero or several leaves
+    the bond unresolved."""
+    live_by_symbol: dict[str, list[FirdsBond]] = {}
+    for record in firds_bonds:
+        if record.status != "TERM":
+            live_by_symbol.setdefault(record.symbol, []).append(record)
+
+    resolved: list[_ResolvedBond] = []
+    unresolved: list[str] = []
+    for bond in athex_bonds:
+        by_isin = {
+            record.isin: record
+            for record in live_by_symbol.get(bond.symbol, [])
+            if record.maturity == bond.maturity
+        }
+        if len(by_isin) != 1:
+            unresolved.append(bond.symbol)
+            continue
+        (record,) = by_isin.values()
+        resolved.append(_ResolvedBond(
+            isin=record.isin, symbol=bond.symbol, issuer=bond.issuer,
+            issuer_full_name=bond.issuer_full_name,
+            cfi_code=record.cfi_code, currency=record.currency,
+        ))
+    return resolved, unresolved
+
+
 def _upsert_feed(
-    products: list[AthexStock] | list[AthexEtf],
+    products: list[AthexStock] | list[AthexEtf] | list[_ResolvedBond],
     instrument_type: str,
     *,
     db_path: str | Path | None,
@@ -160,8 +245,8 @@ def _upsert_feed(
                 """
                 INSERT INTO instruments (
                     isin, name, other_names, instrument_type, source, updated_at, symbol,
-                    last_seen_in_feed
-                ) VALUES (?, ?, ?, ?, 'athex', ?, ?, ?)
+                    last_seen_in_feed, cfi_code, currency
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(isin) DO UPDATE SET
                     name = excluded.name,
                     other_names = excluded.other_names,
@@ -169,12 +254,16 @@ def _upsert_feed(
                     source = excluded.source,
                     updated_at = excluded.updated_at,
                     symbol = excluded.symbol,
-                    last_seen_in_feed = excluded.last_seen_in_feed
+                    last_seen_in_feed = excluded.last_seen_in_feed,
+                    cfi_code = COALESCE(excluded.cfi_code, instruments.cfi_code),
+                    currency = COALESCE(excluded.currency, instruments.currency)
                 """,
                 (
                     product.isin, product.issuer,
                     json.dumps(other_names, ensure_ascii=False),
-                    instrument_type, now, product.symbol, now,
+                    instrument_type, getattr(product, "source", "athex"), now,
+                    product.symbol, now,
+                    getattr(product, "cfi_code", None), getattr(product, "currency", None),
                 ),
             )
         connection.commit()
@@ -185,7 +274,7 @@ def _upsert_feed(
 
 def _refuse_a_shrunk_feed(
     connection: sqlite3.Connection,
-    products: list[AthexStock] | list[AthexEtf],
+    products: list[AthexStock] | list[AthexEtf] | list[_ResolvedBond],
     instrument_type: str,
 ) -> None:
     """The baseline is the set the previous run of this type saw (its
@@ -753,7 +842,14 @@ def fuzzy_match_title_scored(
     dropped from the candidate list entirely before ranking — not just
     scored low — so a confirmed-wrong top candidate can't keep
     resurfacing (letting the next-best genuine candidate take its place)
-    even though the underlying string similarity hasn't changed."""
+    even though the underlying string similarity hasn't changed.
+
+    With no `instrument_type`, bonds are **not** searched. A bond carries
+    its issuer's name (and, once linked, its issuer's entity names), so it
+    would tie the issuer's stock at ratio 1.0 for every company-name title
+    and crowd the real match out of a caller's top N — a change to every
+    existing caller's results for data they never asked about. Ask for
+    them with `instrument_type='bond'`."""
     normalized_title = title.strip().casefold()
     connection = connect(db_path)
     try:
@@ -775,6 +871,7 @@ def fuzzy_match_title_scored(
                        entities.other_names AS entity_other_names
                 FROM instruments
                 LEFT JOIN entities ON entities.lei = instruments.lei
+                WHERE instruments.instrument_type IS NOT 'bond'
                 """
             ).fetchall()
         aliases_by_isin: dict[str, list[str]] = {}

@@ -1,6 +1,7 @@
 from instrument_registry.service import (
     Alias,
     BlacklistEntry,
+    BondRefreshResult,
     Entity,
     FeedShrinkError,
     GleifRefreshResult,
@@ -20,6 +21,7 @@ from instrument_registry.service import (
     lookup_by_lei,
     lookup_by_symbol,
     refresh_athex,
+    refresh_athex_bonds,
     refresh_athex_etfs,
     refresh_gleif,
     remove_alias,
@@ -30,6 +32,7 @@ from instrument_registry.service import (
 __all__ = [
     "Alias",
     "BlacklistEntry",
+    "BondRefreshResult",
     "Entity",
     "FeedShrinkError",
     "GleifRefreshResult",
@@ -49,6 +52,7 @@ __all__ = [
     "lookup_by_lei",
     "lookup_by_symbol",
     "refresh_athex",
+    "refresh_athex_bonds",
     "refresh_athex_etfs",
     "refresh_gleif",
     "remove_alias",
