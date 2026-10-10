@@ -5,7 +5,10 @@ import sqlite3
 
 import pytest
 
-from instrument_registry.collector.athex import AthexEtf, AthexStock
+from datetime import date
+
+from instrument_registry.collector.athex import AthexBond, AthexEtf, AthexStock
+from instrument_registry.collector.esma import FirdsBond
 from instrument_registry.collector.gleif import GleifEntity
 from instrument_registry.db.session import connect
 from instrument_registry.service import (
@@ -24,6 +27,7 @@ from instrument_registry.service import (
     lookup_by_lei,
     lookup_by_symbol,
     refresh_athex,
+    refresh_athex_bonds,
     refresh_athex_etfs,
     refresh_gleif,
     remove_alias,
@@ -1186,3 +1190,165 @@ def test_exclude_title_match_keeps_the_original_created_at_when_re_asserted(tmp_
     [exclusion] = list_title_exclusions("GRS518003009", db_path=db_path)
     assert exclusion.created_at == "2026-01-01T00:00:00+00:00"
     assert exclusion.reason == "second"
+
+
+# --- bonds: ATHEX has no ISIN, so it is resolved from ESMA FIRDS ----------
+
+
+def _athex_bond(symbol="AEGNB2", issuer="AEGEAN AIRLINES S.A.", maturity=date(2032, 7, 4)):
+    return AthexBond(symbol=symbol, issuer=issuer, issuer_full_name=issuer, maturity=maturity)
+
+
+def _firds_bond(isin="GRC0000000A1", symbol="AEGNB2", maturity=date(2032, 7, 4),
+                status="UNCH", mic="XATH"):
+    return FirdsBond(isin=isin, symbol=symbol, mic=mic, cfi_code="DBFUGR",
+                     currency="EUR", maturity=maturity, status=status)
+
+
+def _patch_bond_sources(monkeypatch, athex, firds):
+    monkeypatch.setattr("instrument_registry.service.fetch_athex_bonds", lambda: athex)
+    monkeypatch.setattr("instrument_registry.service.fetch_firds_athens_bonds", lambda: firds)
+
+
+def test_refresh_athex_bonds_resolves_the_isin_from_firds(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _patch_bond_sources(monkeypatch, [_athex_bond()], [_firds_bond()])
+
+    result = refresh_athex_bonds(db_path=db_path)
+
+    assert result.upserted == 1 and result.unresolved == ()
+    bond = lookup_by_isin("GRC0000000A1", db_path=db_path)
+    assert bond is not None
+    assert (bond.instrument_type, bond.symbol, bond.name) == ("bond", "AEGNB2", "AEGEAN AIRLINES S.A.")
+    assert (bond.cfi_code, bond.currency, bond.source) == ("DBFUGR", "EUR", "athex+esma_firds")
+    assert bond.lei is None  # refresh_gleif() owns LEI linking
+    assert lookup_by_symbol("AEGNB2", db_path=db_path).isin == "GRC0000000A1"
+
+
+def test_refresh_athex_bonds_skips_rather_than_guesses(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    athex = [
+        _athex_bond("NOFIRDS"),
+        _athex_bond("WRONGMAT", maturity=date(2030, 1, 1)),
+        _athex_bond("AMBIG"),
+        _athex_bond("OK1"),
+    ]
+    firds = [
+        _firds_bond(isin="GRC000000OK1", symbol="OK1"),
+        _firds_bond(isin="GRC000000WM1", symbol="WRONGMAT", maturity=date(2031, 1, 1)),
+        _firds_bond(isin="GRC000000AM1", symbol="AMBIG"),
+        _firds_bond(isin="GRC000000AM2", symbol="AMBIG"),
+    ]
+    _patch_bond_sources(monkeypatch, athex, firds)
+
+    result = refresh_athex_bonds(db_path=db_path)
+
+    assert result.upserted == 1
+    assert sorted(result.unresolved) == ["AMBIG", "NOFIRDS", "WRONGMAT"]
+    assert lookup_by_isin("GRC000000OK1", db_path=db_path) is not None
+    for isin in ("GRC000000WM1", "GRC000000AM1", "GRC000000AM2"):
+        assert lookup_by_isin(isin, db_path=db_path) is None
+
+
+def test_refresh_athex_bonds_dedupes_records_of_one_isin_and_ignores_terminated(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    firds = [
+        _firds_bond(), _firds_bond(), _firds_bond(),  # three records, one ISIN
+        _firds_bond(isin="GRC000TERMED", status="TERM"),  # same ticker, long dead
+    ]
+    _patch_bond_sources(monkeypatch, [_athex_bond()], firds)
+
+    result = refresh_athex_bonds(db_path=db_path)
+
+    assert result.upserted == 1 and result.unresolved == ()
+    assert lookup_by_isin("GRC000TERMED", db_path=db_path) is None
+
+
+def test_refresh_athex_bonds_resolves_a_bond_on_the_growth_market(tmp_path, monkeypatch):
+    # ROENB1 lives on ENAX, not XATH: a collector filtering on XATH alone
+    # lost it silently.
+    db_path = tmp_path / "registry.db"
+    _patch_bond_sources(
+        monkeypatch,
+        [_athex_bond("ROENB1", "R ENERGY 1 S.A.", date(2026, 12, 22))],
+        [_firds_bond("GRC807121CB5", "ROENB1", date(2026, 12, 22), mic="ENAX")],
+    )
+
+    assert refresh_athex_bonds(db_path=db_path).upserted == 1
+
+
+def test_refresh_athex_bonds_does_not_clobber_an_existing_lei(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    _patch_bond_sources(monkeypatch, [_athex_bond()], [_firds_bond()])
+    refresh_athex_bonds(db_path=db_path)
+    connection = connect(db_path)
+    connection.execute("UPDATE instruments SET lei = 'LEI123' WHERE isin = 'GRC0000000A1'")
+    connection.commit()
+    connection.close()
+
+    refresh_athex_bonds(db_path=db_path)
+
+    assert lookup_by_isin("GRC0000000A1", db_path=db_path).lei == "LEI123"
+
+
+def test_refresh_athex_bonds_refuses_an_empty_resolution_unless_allowed(tmp_path, monkeypatch):
+    # If FIRDS stopped matching (say its field was renamed), every bond
+    # would come back unresolved; that must not read as "all delisted".
+    db_path = tmp_path / "registry.db"
+    _patch_bond_sources(monkeypatch, [_athex_bond()], [_firds_bond()])
+    refresh_athex_bonds(db_path=db_path)
+    _patch_bond_sources(monkeypatch, [_athex_bond()], [])
+
+    with pytest.raises(FeedShrinkError):
+        refresh_athex_bonds(db_path=db_path)
+
+
+def test_unfiltered_fuzzy_match_does_not_return_bonds_but_a_bond_filter_does(tmp_path, monkeypatch):
+    db_path = tmp_path / "registry.db"
+    monkeypatch.setattr(
+        "instrument_registry.service.fetch_athex_stocks",
+        lambda: [AthexStock(isin="GRS000000001", symbol="AEGN", issuer="AEGEAN AIRLINES S.A.",
+                            issuer_full_name="AEGEAN AIRLINES S.A.", market="MAIN MARKET")],
+    )
+    refresh_athex(db_path=db_path)
+    _patch_bond_sources(monkeypatch, [_athex_bond()], [_firds_bond()])
+    refresh_athex_bonds(db_path=db_path)
+
+    unfiltered = fuzzy_match_title("AEGEAN AIRLINES S.A.", db_path=db_path)
+    bonds_only = fuzzy_match_title("AEGEAN AIRLINES S.A.", instrument_type="bond", db_path=db_path)
+
+    assert [i.isin for i in unfiltered] == ["GRS000000001"]
+    assert [i.isin for i in bonds_only] == ["GRC0000000A1"]
+
+
+def test_firds_fetch_retries_a_gateway_timeout_but_not_a_bad_query(monkeypatch):
+    import httpx
+
+    from instrument_registry.collector import esma
+
+    monkeypatch.setattr(esma, "_RETRY_DELAY", 0)
+    request = httpx.Request("GET", esma.FIRDS_URL)
+
+    class Client:
+        def __init__(self, statuses):
+            self.statuses = list(statuses)
+            self.calls = 0
+
+        def get(self, url, params):
+            self.calls += 1
+            status = self.statuses.pop(0)
+            return httpx.Response(status, request=request, json={"response": {"docs": [], "numFound": 0}})
+
+    flaky = Client([504, 200])
+    assert esma._get_page(flaky, {}) == {"docs": [], "numFound": 0}
+    assert flaky.calls == 2
+
+    bad = Client([400, 200])
+    with pytest.raises(httpx.HTTPStatusError):
+        esma._get_page(bad, {})
+    assert bad.calls == 1
+
+    down = Client([504, 504, 504])
+    with pytest.raises(httpx.HTTPStatusError):
+        esma._get_page(down, {})
+    assert down.calls == 3

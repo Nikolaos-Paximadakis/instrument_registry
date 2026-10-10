@@ -15,23 +15,25 @@ which this project doesn't depend on — gzip/deflate is enough.
 
 Confirmed live 2026-08-09 which sibling `{product_type}_en.json` feeds
 exist and whether their shape actually fits this package's ISIN-keyed
-schema — they don't all: `bonds_en.json` (59 rows) has no ISIN field at
-all, keyed by `_productId`/`Symbol` instead, so bonds can't slot into
-`instruments` without a separate ISIN source (this is the "materially
-harder sourcing problem" the README's Phase 1 scope note already
-flags). `warrants_en.json` returned 0 rows live, so its shape is
-unverified — nothing to fetch yet either way. `etfs_en.json` (1 row)
+schema — they don't all: `bonds_en.json` (59 rows, re-confirmed
+2026-10-10) has no ISIN field at all, keyed by `_productId`/`Symbol`
+instead, so `fetch_athex_bonds()` returns bonds without one and the ISIN
+is resolved from ESMA FIRDS (`collector/esma.py`) in
+`service.refresh_athex_bonds()`. `warrants_en.json` returned 0 rows live
+on both dates, so its shape is unverified — nothing to fetch yet. `etfs_en.json` (1 row)
 does carry ISIN and fits the same shape as stocks (modulo a `Market`
 field stocks has and ETFs doesn't), hence `fetch_athex_etfs()` below.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 import httpx
 
 STOCKS_URL = "https://athens.euronext.com/sites/default/files/json_data_files/stocks_en.json"
 ETFS_URL = "https://athens.euronext.com/sites/default/files/json_data_files/etfs_en.json"
+BONDS_URL = "https://athens.euronext.com/sites/default/files/json_data_files/bonds_en.json"
 
 _HEADERS = {
     "User-Agent": (
@@ -99,6 +101,40 @@ def fetch_athex_etfs(*, timeout: float = 30.0) -> list[AthexEtf]:
             symbol=row["Symbol"],
             issuer=row["Issuer"],
             issuer_full_name=row.get("_issuerFullName", row["Issuer"]),
+        )
+        for row in payload["data"]
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class AthexBond:
+    """A listed bond as ATHEX publishes it — which is *without an ISIN*.
+    `collector/esma.py` is where the ISIN comes from; see
+    `service.refresh_athex_bonds()` for the join."""
+    symbol: str
+    issuer: str
+    issuer_full_name: str
+    maturity: date
+
+
+def fetch_athex_bonds(*, timeout: float = 30.0) -> list[AthexBond]:
+    """Fetch ATHEX's current listed-bonds list (`bonds_en.json`, 59 rows
+    live 2026-10-10). Unlike stocks and ETFs this feed carries no ISIN —
+    it is keyed by `_productId`/`Symbol` — so a row is only half of an
+    instrument until the ISIN is resolved elsewhere. `Maturity` is kept
+    because it is what lets that resolution be checked rather than trusted.
+    Covers both ATHEX markets (`ib_market` ATH and ENAX)."""
+    with httpx.Client(http2=True, headers=_HEADERS, timeout=timeout, follow_redirects=True) as client:
+        response = client.get(BONDS_URL)
+        response.raise_for_status()
+        payload = response.json()
+
+    return [
+        AthexBond(
+            symbol=row["Symbol"],
+            issuer=row["Issuer"],
+            issuer_full_name=row.get("_issuerFullName", row["Issuer"]),
+            maturity=date.fromisoformat(row["Maturity"]["date"][:10]),
         )
         for row in payload["data"]
     ]
