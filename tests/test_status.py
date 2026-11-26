@@ -131,13 +131,13 @@ def test_status_does_not_flag_upstream_tables_that_shrank(tmp_path):
     # learned tables are irreplaceable, so only they alarm.
     db_path = tmp_path / "registry.db"
     _seed(db_path)
-    _seed(db_path, instrument_type="stock", isin="GRS111111111", symbol="XXX")
+    _seed(db_path, instrument_type="stock", isin="GRS111111118", symbol="XXX")
     _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
     _seed_bond(db_path)
     backup_mod.backup(root=tmp_path / "dest", db_path=db_path, keep=30)
 
     connection = connect(db_path)
-    connection.execute("DELETE FROM instruments WHERE isin = 'GRS111111111'")
+    connection.execute("DELETE FROM instruments WHERE isin = 'GRS111111118'")
     connection.commit()
     connection.close()
 
@@ -245,7 +245,7 @@ def test_status_counts_rows_no_longer_in_the_feed_without_calling_it_a_problem(t
     # last seen by an earlier run, and one never seen since tracking began.
     db_path = tmp_path / "registry.db"
     _seed(db_path, last_seen_in_feed="2026-09-01T00:00:00+00:00")
-    _seed(db_path, isin="GRS111111111", symbol="OLD",
+    _seed(db_path, isin="GRS111111118", symbol="OLD",
           last_seen_in_feed="2026-08-01T00:00:00+00:00")
     _seed(db_path, isin="GRS222222222", symbol="OLDER", last_seen_in_feed=None)
     _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")

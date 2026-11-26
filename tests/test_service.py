@@ -11,6 +11,7 @@ from instrument_registry.collector.athex import AthexBond, AthexEtf, AthexStock
 from instrument_registry.collector.esma import FirdsBond
 from instrument_registry.collector.gleif import GleifEntity
 from instrument_registry.db.session import connect
+from instrument_registry.identifiers import Isin, Lei
 from instrument_registry.service import (
     Entity,
     FeedShrinkError,
@@ -272,7 +273,7 @@ def test_refresh_athex_upserts_without_clobbering_existing_lei(tmp_path, monkeyp
         "instrument_registry.service.fetch_athex_stocks",
         lambda: [
             AthexStock(
-                isin="GRS003003035",
+                isin=Isin("GRS003003035"),
                 symbol="ETE",
                 issuer="NAT. BANK OF GREECE SA",
                 issuer_full_name="NATIONAL BANK OF GREECE S.A.",
@@ -295,7 +296,7 @@ def test_refresh_athex_populates_the_symbol_column(tmp_path, monkeypatch):
         "instrument_registry.service.fetch_athex_stocks",
         lambda: [
             AthexStock(
-                isin="GRS003003035",
+                isin=Isin("GRS003003035"),
                 symbol="ETE",
                 issuer="NAT. BANK OF GREECE SA",
                 issuer_full_name="NATIONAL BANK OF GREECE S.A.",
@@ -318,7 +319,7 @@ def test_refresh_athex_etfs_upserts_into_instruments_with_etf_type(tmp_path, mon
         "instrument_registry.service.fetch_athex_etfs",
         lambda: [
             AthexEtf(
-                isin="GRF000153004",
+                isin=Isin("GRF000153004"),
                 symbol="AETF",
                 issuer="ALPHA ASSET MANAGEMENT M.F.M.C.",
                 issuer_full_name="ALPHA ASSET MANAGEMENT MUTUAL FUNDS MANAGEMENT COMPANY S.A.",
@@ -346,7 +347,7 @@ def test_refresh_athex_etfs_populates_the_symbol_column(tmp_path, monkeypatch):
         "instrument_registry.service.fetch_athex_etfs",
         lambda: [
             AthexEtf(
-                isin="GRF000153004",
+                isin=Isin("GRF000153004"),
                 symbol="AETF",
                 issuer="ALPHA ASSET MANAGEMENT M.F.M.C.",
                 issuer_full_name="ALPHA ASSET MANAGEMENT MUTUAL FUNDS MANAGEMENT COMPANY S.A.",
@@ -375,7 +376,7 @@ def test_refresh_athex_etfs_backfills_the_symbol_of_a_row_that_lacks_one(
         "instrument_registry.service.fetch_athex_etfs",
         lambda: [
             AthexEtf(
-                isin="GRF000153004",
+                isin=Isin("GRF000153004"),
                 symbol="AETF",
                 issuer="ALPHA ASSET MANAGEMENT M.F.M.C.",
                 issuer_full_name="ALPHA ASSET MANAGEMENT MUTUAL FUNDS MANAGEMENT COMPANY S.A.",
@@ -399,7 +400,7 @@ def test_refresh_athex_etfs_does_not_clobber_an_existing_lei(tmp_path, monkeypat
         "instrument_registry.service.fetch_athex_etfs",
         lambda: [
             AthexEtf(
-                isin="GRF000153004",
+                isin=Isin("GRF000153004"),
                 symbol="AETF",
                 issuer="ALPHA ASSET MANAGEMENT M.F.M.C.",
                 issuer_full_name="ALPHA ASSET MANAGEMENT MUTUAL FUNDS MANAGEMENT COMPANY S.A.",
@@ -421,7 +422,7 @@ def test_refresh_gleif_links_pending_instruments_and_stores_the_entity(tmp_path,
     monkeypatch.setattr(
         "instrument_registry.service.lookup_lei_by_isin",
         lambda isin: GleifEntity(
-            lei="5UMCZOEYKCVFAW8ZLO05",
+            lei=Lei("5UMCZOEYKCVFAW8ZLO05"),
             legal_name="ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ Α.Ε.",
             other_names=["NATIONAL BANK OF GREECE S.A."],
             country="GR",
@@ -467,7 +468,7 @@ def test_refresh_gleif_does_not_relink_a_blacklisted_pair(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "instrument_registry.service.lookup_lei_by_isin",
         lambda isin: GleifEntity(
-            lei="213800OYHR1MPQ5VJL60",
+            lei=Lei("213800OYHR1MPQ5VJL60"),
             legal_name="PIRAEUS BANK S.A.",
             other_names=[],
             country="GR",
@@ -496,7 +497,7 @@ def test_refresh_gleif_still_links_a_different_lei_for_a_blacklisted_isin(tmp_pa
     monkeypatch.setattr(
         "instrument_registry.service.lookup_lei_by_isin",
         lambda isin: GleifEntity(
-            lei="529900W18LQJJN6SJ336",
+            lei=Lei("529900W18LQJJN6SJ336"),
             legal_name="MERMEREN KOMBINAT AD PRILEP",
             other_names=[],
             country="MK",
@@ -518,9 +519,9 @@ def test_fuzzy_match_title_matches_an_exact_learned_alias(tmp_path):
     # review that it's the same company — once harvested as an alias, it
     # must resolve immediately and exactly, not need refuzzy-matching.
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="ΑΝΩΝΥΜΟΣ ΕΤΑΙΡΕΙΑ ΣΥΜΜΕΤΟΧΩΝ")
+    _seed_instrument(db_path, isin="GRS332003003", name="ΑΝΩΝΥΜΟΣ ΕΤΑΙΡΕΙΑ ΣΥΜΜΕΤΟΧΩΝ")
     add_alias(
-        "GRS332003008", "MIG HOLDINGS SA",
+        "GRS332003003", "MIG HOLDINGS SA",
         source="pothen_eshes.title_review:cluster_id=366", db_path=db_path,
     )
 
@@ -528,21 +529,21 @@ def test_fuzzy_match_title_matches_an_exact_learned_alias(tmp_path):
 
     assert len(matches) == 1
     ratio, matched_via, instrument = matches[0]
-    assert instrument.isin == "GRS332003008"
+    assert instrument.isin == "GRS332003003"
     assert ratio == 1.0
     assert matched_via == "MIG HOLDINGS SA"
 
 
 def test_add_alias_upserts_rather_than_duplicates(tmp_path):
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
 
-    add_alias("GRS332003008", "ALIAS ONE", source="first-pass", db_path=db_path)
-    add_alias("GRS332003008", "ALIAS ONE", source="second-pass", db_path=db_path)
+    add_alias("GRS332003003", "ALIAS ONE", source="first-pass", db_path=db_path)
+    add_alias("GRS332003003", "ALIAS ONE", source="second-pass", db_path=db_path)
 
     connection = connect(db_path)
     rows = connection.execute(
-        "SELECT alias_text, source FROM instrument_aliases WHERE isin = ?", ("GRS332003008",)
+        "SELECT alias_text, source FROM instrument_aliases WHERE isin = ?", ("GRS332003003",)
     ).fetchall()
     connection.close()
 
@@ -559,7 +560,7 @@ def test_refresh_athex_never_touches_learned_aliases(tmp_path, monkeypatch):
         "instrument_registry.service.fetch_athex_stocks",
         lambda: [
             AthexStock(
-                isin="GRS003003035", symbol="ETE", issuer="NAT. BANK OF GREECE SA",
+                isin=Isin("GRS003003035"), symbol="ETE", issuer="NAT. BANK OF GREECE SA",
                 issuer_full_name="NATIONAL BANK OF GREECE S.A.", market="SECURITIES MARKET",
             )
         ],
@@ -572,7 +573,7 @@ def test_refresh_athex_never_touches_learned_aliases(tmp_path, monkeypatch):
 
 def test_refresh_gleif_leaves_isin_unlinked_when_no_entity_found(tmp_path, monkeypatch):
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS999999999", name="SOME OLD ISSUER")
+    _seed_instrument(db_path, isin="GRS999999998", name="SOME OLD ISSUER")
 
     monkeypatch.setattr(
         "instrument_registry.service.lookup_lei_by_isin", lambda isin: None
@@ -583,7 +584,7 @@ def test_refresh_gleif_leaves_isin_unlinked_when_no_entity_found(tmp_path, monke
     assert result.linked == 0
     # Contrast with the blacklist case: same linked count, different reason.
     assert result.skipped_blacklisted == 0
-    assert _instrument("GRS999999999", db_path).lei is None
+    assert _instrument("GRS999999998", db_path).lei is None
 
 
 def test_exclude_title_match_removes_a_candidate_from_the_ranking(tmp_path):
@@ -638,15 +639,15 @@ def test_exclude_title_match_upserts_rather_than_duplicates(tmp_path):
 
 def test_remove_alias_deletes_the_row(tmp_path):
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
-    add_alias("GRS332003008", "AN ALIAS", source="test", db_path=db_path)
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
+    add_alias("GRS332003003", "AN ALIAS", source="test", db_path=db_path)
 
-    remove_alias("GRS332003008", "AN ALIAS", db_path=db_path)
+    remove_alias("GRS332003003", "AN ALIAS", db_path=db_path)
 
     connection = connect(db_path)
     rows = connection.execute(
         "SELECT * FROM instrument_aliases WHERE isin = ? AND alias_text = ?",
-        ("GRS332003008", "AN ALIAS"),
+        ("GRS332003003", "AN ALIAS"),
     ).fetchall()
     connection.close()
     assert rows == []
@@ -654,9 +655,9 @@ def test_remove_alias_deletes_the_row(tmp_path):
 
 def test_remove_alias_is_a_noop_for_a_nonexistent_alias(tmp_path):
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
 
-    remove_alias("GRS332003008", "NEVER ADDED", db_path=db_path)  # must not raise
+    remove_alias("GRS332003003", "NEVER ADDED", db_path=db_path)  # must not raise
 
 
 def test_unblacklist_lei_deletes_the_row_without_relinking(tmp_path):
@@ -687,7 +688,7 @@ def test_unblacklist_lei_lets_refresh_gleif_relink_the_pair(tmp_path, monkeypatc
     monkeypatch.setattr(
         "instrument_registry.service.lookup_lei_by_isin",
         lambda isin: GleifEntity(
-            lei="213800OYHR1MPQ5VJL60",
+            lei=Lei("213800OYHR1MPQ5VJL60"),
             legal_name="PIRAEUS BANK S.A.",
             other_names=[],
             country="GR",
@@ -761,22 +762,22 @@ def test_each_remove_records_a_tombstone_carrying_the_deleted_row(tmp_path):
     # #23: a deletion has to be a row, not an absence, or a merge from a
     # stale copy cannot tell it apart from a row this copy never had.
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
-    add_alias("GRS332003008", "AN ALIAS", source="test", confidence=0.9, db_path=db_path)
-    blacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", reason="wrong", db_path=db_path)
-    exclude_title_match("GRS332003008", "  Some Title ", reason="r", db_path=db_path)
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
+    add_alias("GRS332003003", "AN ALIAS", source="test", confidence=0.9, db_path=db_path)
+    blacklist_lei("GRS332003003", "213800OYHR1MPQ5VJL60", reason="wrong", db_path=db_path)
+    exclude_title_match("GRS332003003", "  Some Title ", reason="r", db_path=db_path)
 
-    remove_alias("GRS332003008", "AN ALIAS", reason="corrupted", db_path=db_path)
-    unblacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", db_path=db_path)
-    remove_title_exclusion("GRS332003008", "SOME TITLE", db_path=db_path)
+    remove_alias("GRS332003003", "AN ALIAS", reason="corrupted", db_path=db_path)
+    unblacklist_lei("GRS332003003", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    remove_title_exclusion("GRS332003003", "SOME TITLE", db_path=db_path)
 
     stones = _tombstones(db_path)
     assert set(stones) == {
-        ("instrument_aliases", "GRS332003008", "AN ALIAS"),
-        ("lei_blacklist", "GRS332003008", "213800OYHR1MPQ5VJL60"),
-        ("title_isin_exclusions", "GRS332003008", "some title"),
+        ("instrument_aliases", "GRS332003003", "AN ALIAS"),
+        ("lei_blacklist", "GRS332003003", "213800OYHR1MPQ5VJL60"),
+        ("title_isin_exclusions", "GRS332003003", "some title"),
     }
-    alias = stones[("instrument_aliases", "GRS332003008", "AN ALIAS")]
+    alias = stones[("instrument_aliases", "GRS332003003", "AN ALIAS")]
     assert alias["reason"] == "corrupted"
     assert json.loads(alias["row_json"])["confidence"] == 0.9
 
@@ -785,53 +786,53 @@ def test_removing_a_key_that_is_not_there_still_records_the_deletion(tmp_path):
     # How a cleanup another copy hasn't had yet gets recorded — including
     # the four aliases deleted on 2026-08-09, before tombstones existed.
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
 
-    remove_alias("GRS332003008", "NEVER ADDED", reason="known-bad", db_path=db_path)
+    remove_alias("GRS332003003", "NEVER ADDED", reason="known-bad", db_path=db_path)
 
-    stone = _tombstones(db_path)[("instrument_aliases", "GRS332003008", "NEVER ADDED")]
+    stone = _tombstones(db_path)[("instrument_aliases", "GRS332003003", "NEVER ADDED")]
     assert stone["row_json"] is None
 
 
 def test_re_removing_keeps_the_original_deleted_at(tmp_path):
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
-    remove_alias("GRS332003008", "X", reason="first", db_path=db_path)
-    first = _tombstones(db_path)[("instrument_aliases", "GRS332003008", "X")]
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
+    remove_alias("GRS332003003", "X", reason="first", db_path=db_path)
+    first = _tombstones(db_path)[("instrument_aliases", "GRS332003003", "X")]
 
-    remove_alias("GRS332003008", "X", db_path=db_path)
+    remove_alias("GRS332003003", "X", db_path=db_path)
 
-    again = _tombstones(db_path)[("instrument_aliases", "GRS332003008", "X")]
+    again = _tombstones(db_path)[("instrument_aliases", "GRS332003003", "X")]
     assert again["deleted_at"] == first["deleted_at"]
     assert again["reason"] == "first"
 
 
 def test_re_adding_a_deleted_key_clears_its_tombstone(tmp_path):
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
-    add_alias("GRS332003008", "A", source="t", db_path=db_path)
-    blacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", db_path=db_path)
-    exclude_title_match("GRS332003008", "t", db_path=db_path)
-    remove_alias("GRS332003008", "A", db_path=db_path)
-    unblacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", db_path=db_path)
-    remove_title_exclusion("GRS332003008", "t", db_path=db_path)
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
+    add_alias("GRS332003003", "A", source="t", db_path=db_path)
+    blacklist_lei("GRS332003003", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    exclude_title_match("GRS332003003", "t", db_path=db_path)
+    remove_alias("GRS332003003", "A", db_path=db_path)
+    unblacklist_lei("GRS332003003", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    remove_title_exclusion("GRS332003003", "t", db_path=db_path)
 
-    add_alias("GRS332003008", "A", source="t", db_path=db_path)
-    blacklist_lei("GRS332003008", "213800OYHR1MPQ5VJL60", db_path=db_path)
-    exclude_title_match("GRS332003008", " T ", db_path=db_path)
+    add_alias("GRS332003003", "A", source="t", db_path=db_path)
+    blacklist_lei("GRS332003003", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    exclude_title_match("GRS332003003", " T ", db_path=db_path)
 
     assert _tombstones(db_path) == {}
 
 
 def test_list_aliases_returns_all_aliases_for_the_isin_oldest_first(tmp_path):
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
-    _seed_instrument(db_path, isin="GRS999999999", name="A DIFFERENT COMPANY")
-    add_alias("GRS332003008", "ALIAS ONE", source="first-pass", confidence=0.8, db_path=db_path)
-    add_alias("GRS332003008", "ALIAS TWO", source="second-pass", db_path=db_path)
-    add_alias("GRS999999999", "UNRELATED ALIAS", source="test", db_path=db_path)
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
+    _seed_instrument(db_path, isin="GRS999999998", name="A DIFFERENT COMPANY")
+    add_alias("GRS332003003", "ALIAS ONE", source="first-pass", confidence=0.8, db_path=db_path)
+    add_alias("GRS332003003", "ALIAS TWO", source="second-pass", db_path=db_path)
+    add_alias("GRS999999998", "UNRELATED ALIAS", source="test", db_path=db_path)
 
-    aliases = list_aliases("GRS332003008", db_path=db_path)
+    aliases = list_aliases("GRS332003003", db_path=db_path)
 
     assert [a.alias_text for a in aliases] == ["ALIAS ONE", "ALIAS TWO"]
     assert aliases[0].source == "first-pass"
@@ -840,28 +841,28 @@ def test_list_aliases_returns_all_aliases_for_the_isin_oldest_first(tmp_path):
 
 def test_list_aliases_returns_empty_for_an_isin_with_none(tmp_path):
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
 
-    assert list_aliases("GRS332003008", db_path=db_path) == []
+    assert list_aliases("GRS332003003", db_path=db_path) == []
 
 
 def test_list_blacklisted_returns_all_pairs_when_isin_omitted(tmp_path):
     db_path = tmp_path / "registry.db"
     blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", reason="wrong upstream", db_path=db_path)
-    blacklist_lei("GRS999999999", "5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
+    blacklist_lei("GRS999999998", "5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
 
     entries = list_blacklisted(db_path=db_path)
 
     assert {(e.isin, e.lei) for e in entries} == {
         ("GRK014011008", "213800OYHR1MPQ5VJL60"),
-        ("GRS999999999", "5UMCZOEYKCVFAW8ZLO05"),
+        ("GRS999999998", "5UMCZOEYKCVFAW8ZLO05"),
     }
 
 
 def test_list_blacklisted_filters_by_isin_when_given(tmp_path):
     db_path = tmp_path / "registry.db"
     blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", reason="wrong upstream", db_path=db_path)
-    blacklist_lei("GRS999999999", "5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
+    blacklist_lei("GRS999999998", "5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
 
     entries = list_blacklisted(isin="GRK014011008", db_path=db_path)
 
@@ -1036,7 +1037,7 @@ def test_refresh_athex_never_judges_an_etf(tmp_path, monkeypatch):
     db_path = tmp_path / "registry.db"
     monkeypatch.setattr(
         "instrument_registry.service.fetch_athex_etfs",
-        lambda: [AthexEtf(isin="GRF000153004", symbol="AETF", issuer="A", issuer_full_name="A")],
+        lambda: [AthexEtf(isin=Isin("GRF000153004"), symbol="AETF", issuer="A", issuer_full_name="A")],
     )
     refresh_athex_etfs(db_path=db_path)
     etf_seen = _feed_column(db_path)["GRF000153004"]
@@ -1132,7 +1133,7 @@ def test_refresh_athex_etfs_refuses_an_empty_feed(tmp_path, monkeypatch):
     db_path = tmp_path / "registry.db"
     monkeypatch.setattr(
         "instrument_registry.service.fetch_athex_etfs",
-        lambda: [AthexEtf(isin="GRF000153004", symbol="AETF", issuer="A", issuer_full_name="A")],
+        lambda: [AthexEtf(isin=Isin("GRF000153004"), symbol="AETF", issuer="A", issuer_full_name="A")],
     )
     refresh_athex_etfs(db_path=db_path)
     monkeypatch.setattr("instrument_registry.service.fetch_athex_etfs", lambda: [])
@@ -1176,13 +1177,13 @@ def _created_at(db_path, table, isin):
 
 def test_add_alias_keeps_the_original_created_at_when_re_asserted(tmp_path):
     db_path = tmp_path / "registry.db"
-    _seed_instrument(db_path, isin="GRS332003008", name="SOME COMPANY")
-    add_alias("GRS332003008", "ALIAS ONE", source="first-pass", db_path=db_path)
-    _backdate(db_path, "instrument_aliases", "GRS332003008")
+    _seed_instrument(db_path, isin="GRS332003003", name="SOME COMPANY")
+    add_alias("GRS332003003", "ALIAS ONE", source="first-pass", db_path=db_path)
+    _backdate(db_path, "instrument_aliases", "GRS332003003")
 
-    add_alias("GRS332003008", "ALIAS ONE", source="second-pass", confidence=0.9, db_path=db_path)
+    add_alias("GRS332003003", "ALIAS ONE", source="second-pass", confidence=0.9, db_path=db_path)
 
-    [alias] = list_aliases("GRS332003008", db_path=db_path)
+    [alias] = list_aliases("GRS332003003", db_path=db_path)
     assert alias.created_at == "2026-01-01T00:00:00+00:00"
     assert alias.source == "second-pass"
     assert alias.confidence == 0.9
@@ -1223,7 +1224,7 @@ def _athex_bond(symbol="AEGNB2", issuer="AEGEAN AIRLINES S.A.", maturity=date(20
 
 def _firds_bond(isin="GRC0000000A1", symbol="AEGNB2", maturity=date(2032, 7, 4),
                 status="UNCH", mic="XATH"):
-    return FirdsBond(isin=isin, symbol=symbol, mic=mic, cfi_code="DBFUGR",
+    return FirdsBond(isin=Isin(isin), symbol=symbol, mic=mic, cfi_code="DBFUGR",
                      currency="EUR", maturity=maturity, status=status)
 
 
@@ -1330,7 +1331,7 @@ def test_unfiltered_fuzzy_match_does_not_return_bonds_but_a_bond_filter_does(tmp
     db_path = tmp_path / "registry.db"
     monkeypatch.setattr(
         "instrument_registry.service.fetch_athex_stocks",
-        lambda: [AthexStock(isin="GRS000000001", symbol="AEGN", issuer="AEGEAN AIRLINES S.A.",
+        lambda: [AthexStock(isin=Isin("GRS000000001"), symbol="AEGN", issuer="AEGEAN AIRLINES S.A.",
                             issuer_full_name="AEGEAN AIRLINES S.A.", market="MAIN MARKET")],
     )
     refresh_athex(db_path=db_path)
@@ -1381,7 +1382,7 @@ def test_refresh_athex_bonds_will_not_relabel_an_isin_cached_as_a_stock(tmp_path
     db_path = tmp_path / "registry.db"
     monkeypatch.setattr(
         "instrument_registry.service.fetch_athex_stocks",
-        lambda: [AthexStock(isin="GRC0000000A1", symbol="AEGN", issuer="AEGEAN AIRLINES S.A.",
+        lambda: [AthexStock(isin=Isin("GRC0000000A1"), symbol="AEGN", issuer="AEGEAN AIRLINES S.A.",
                             issuer_full_name="AEGEAN AIRLINES S.A.", market="MAIN MARKET")],
     )
     refresh_athex(db_path=db_path)
@@ -1436,10 +1437,12 @@ def test_a_typod_isin_is_rejected_by_every_learned_write_that_references_it(tmp_
     db_path = tmp_path / "registry.db"
     _seed_instrument(db_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA")
 
-    with pytest.raises(ValueError, match="unknown isin 'GRS00300303X'"):
-        add_alias("GRS00300303X", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ", source="test", db_path=db_path)
-    with pytest.raises(ValueError, match="unknown isin 'GRS00300303X'"):
-        exclude_title_match("GRS00300303X", "SOME TITLE", reason="test", db_path=db_path)
+    # A well-formed ISIN with a valid check digit that simply isn't cached
+    # here: it passes parse_isin(), so this is the FK doing the rejecting.
+    with pytest.raises(ValueError, match="unknown isin 'GRS003003043'"):
+        add_alias("GRS003003043", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ", source="test", db_path=db_path)
+    with pytest.raises(ValueError, match="unknown isin 'GRS003003043'"):
+        exclude_title_match("GRS003003043", "SOME TITLE", reason="test", db_path=db_path)
 
     connection = connect(db_path)
     try:
@@ -1449,7 +1452,7 @@ def test_a_typod_isin_is_rejected_by_every_learned_write_that_references_it(tmp_
         connection.close()
     # lei_blacklist deliberately has no FK: a blacklisted pair is about
     # GLEIF's data, and stays valid even if the ISIN isn't cached here.
-    blacklist_lei("GRS00300303X", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    blacklist_lei("GRS003003043", "213800OYHR1MPQ5VJL60", db_path=db_path)
     assert len(list_blacklisted(db_path=db_path)) == 1
 
 

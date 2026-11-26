@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from instrument_registry.identifiers import Isin, Lei, is_valid_isin, is_valid_lei
+
 JsonObject = Mapping[str, object]
 
 
@@ -71,6 +73,22 @@ def opt_str(obj: JsonObject, key: str, where: str) -> str | None:
     if value is not None and not isinstance(value, str):
         raise FeedShapeError(f"{where}.{key}: expected a string or null, got {type(value).__name__}")
     return value
+
+
+def req_isin(obj: JsonObject, key: str, where: str) -> Isin:
+    """A string field that must be a well-formed ISIN with a valid check digit."""
+    value = req_str(obj, key, where)
+    if not is_valid_isin(value):
+        raise FeedShapeError(f"{where}.{key}: not a valid ISIN: {value!r}")
+    return Isin(value)
+
+
+def req_lei(obj: JsonObject, key: str, where: str) -> Lei:
+    """A string field that must be a well-formed LEI with valid check digits."""
+    value = req_str(obj, key, where)
+    if not is_valid_lei(value):
+        raise FeedShapeError(f"{where}.{key}: not a valid LEI: {value!r}")
+    return Lei(value)
 
 
 def req_int(obj: JsonObject, key: str, where: str) -> int:

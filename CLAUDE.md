@@ -144,6 +144,12 @@ fills those in. Before any destructive operation on the cache, back it up first 
   wrong candidate can't keep outranking the real one no matter how many times matching
   re-runs.
 - Matching is **advisory** — it ranks candidates and decides nothing.
+- **ISINs and LEIs are typed and check-digit-validated** (`identifiers.py`, 2026-11-26).
+  Learned-row writes and the collectors validate, and lookups don't. Public parameters
+  deliberately stay `str`: Mihalis type-checks its calls to this package in CI, so
+  tightening a parameter to `Isin` breaks its build on the next pin bump. Do that
+  only together with a matching Mihalis change. Test fixtures need valid check digits
+  wherever they reach a write; `is_valid_isin()` finds the right last digit.
 - **A schema migration that adds a column doesn't backfill it.** `db/models.py`'s
   `_add_column()` can only run `ALTER TABLE ADD COLUMN` — existing rows get that column
   as NULL until something re-fetches real values into it. This bit `instruments.symbol`

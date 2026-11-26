@@ -45,6 +45,21 @@ feed's shape is still unverified — nothing to fetch yet.
 
 ## Public Service API
 
+**Identifiers.** `Isin` and `Lei` (from `instrument_registry`) are
+`NewType`s over `str`, carried by `Instrument`, `Entity`, `Alias`,
+`BlacklistEntry` and `TitleExclusion`. Public functions still take plain
+`str`, but every function that writes or removes a learned row
+(`add_alias`, `exclude_title_match`, `blacklist_lei` and their `remove_*`/
+`unblacklist_*` counterparts) validates its identifiers first. It checks
+the ISO 6166 shape and Luhn check digit for an ISIN, and the ISO 17442
+shape and MOD 97-10 check digits for an LEI, and raises `ValueError` on a
+typo'd or swapped one. No normalisation: lower case or whitespace is refused,
+not fixed. The collectors apply the same checks to ATHEX, FIRDS and GLEIF
+data (a `FeedShapeError` fails the refresh). Lookups don't validate: an
+unknown or malformed identifier just finds nothing. `parse_isin()`/
+`parse_lei()` and `is_valid_isin()`/`is_valid_lei()` are exported for
+consumers that want the typed values themselves.
+
 - `refresh_athex(db_path=None, allow_drop=False) -> int` — fetch + upsert
   ATHEX's current stock list. Safe to re-run. Stamps
   `instruments.last_seen_in_feed` on every stock in the feed and never

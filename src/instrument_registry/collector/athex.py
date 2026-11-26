@@ -36,8 +36,10 @@ from instrument_registry.collector._json import (
     as_object,
     as_objects,
     opt_str,
+    req_isin,
     req_str,
 )
+from instrument_registry.identifiers import Isin
 
 STOCKS_URL = "https://athens.euronext.com/sites/default/files/json_data_files/stocks_en.json"
 ETFS_URL = "https://athens.euronext.com/sites/default/files/json_data_files/etfs_en.json"
@@ -56,7 +58,7 @@ _HEADERS = {
 
 @dataclass(frozen=True, slots=True)
 class AthexStock:
-    isin: str
+    isin: Isin
     symbol: str
     issuer: str
     issuer_full_name: str
@@ -72,7 +74,7 @@ def fetch_athex_stocks(*, timeout: float = 30.0) -> list[AthexStock]:
 
     return [
         AthexStock(
-            isin=req_str(row, "ISIN", where),
+            isin=req_isin(row, "ISIN", where),
             symbol=req_str(row, "Symbol", where),
             issuer=req_str(row, "Issuer", where),
             issuer_full_name=_issuer_full_name(row, where),
@@ -84,7 +86,7 @@ def fetch_athex_stocks(*, timeout: float = 30.0) -> list[AthexStock]:
 
 @dataclass(frozen=True, slots=True)
 class AthexEtf:
-    isin: str
+    isin: Isin
     symbol: str
     issuer: str
     issuer_full_name: str
@@ -105,7 +107,7 @@ def fetch_athex_etfs(*, timeout: float = 30.0) -> list[AthexEtf]:
 
     return [
         AthexEtf(
-            isin=req_str(row, "ISIN", where),
+            isin=req_isin(row, "ISIN", where),
             symbol=req_str(row, "Symbol", where),
             issuer=req_str(row, "Issuer", where),
             issuer_full_name=_issuer_full_name(row, where),
