@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date
 
 import pytest
-
-from datetime import date
 
 from instrument_registry.collector.athex import AthexBond, AthexEtf, AthexStock
 from instrument_registry.collector.esma import FirdsBond
@@ -937,11 +936,8 @@ def test_import_snapshot_refuses_to_overwrite_a_nonempty_db_by_default(tmp_path)
     target_path = tmp_path / "target.db"
     _seed_instrument(target_path, isin="GRS831003009", name="EXISTING DATA, MUST SURVIVE")
 
-    try:
+    with pytest.raises(ValueError):
         import_snapshot(snapshot, db_path=target_path)
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
 
     instrument = lookup_by_isin("GRS831003009", db_path=target_path)
     assert instrument is not None

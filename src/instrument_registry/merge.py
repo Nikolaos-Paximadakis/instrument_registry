@@ -225,7 +225,7 @@ def merge_learned(
         # A snapshot taken before tombstones existed simply has none.
         source_tombstones = [
             dict(row) for row in src.execute(
-                f"SELECT {', '.join(TOMBSTONE_COLUMNS)} FROM learned_tombstones")
+                f"SELECT {', '.join(TOMBSTONE_COLUMNS)} FROM learned_tombstones")  # noqa: S608 - identifiers are module constants; values are bound
         ] if "learned_tombstones" in present else []
 
         dest = connect(db_path)
@@ -236,7 +236,7 @@ def merge_learned(
             dest_tombstones = {
                 (row["table_name"], row["isin"], row["key_text"]): dict(row)
                 for row in dest.execute(
-                    f"SELECT {', '.join(TOMBSTONE_COLUMNS)} FROM learned_tombstones")
+                    f"SELECT {', '.join(TOMBSTONE_COLUMNS)} FROM learned_tombstones")  # noqa: S608 - identifiers are module constants; values are bound
             }
             report: dict = {
                 "source": str(source),
@@ -250,7 +250,7 @@ def merge_learned(
                 existing = {
                     (row["isin"], row[key_column]): row["created_at"]
                     for row in dest.execute(
-                        f"SELECT isin, {key_column}, created_at FROM {table}")
+                        f"SELECT isin, {key_column}, created_at FROM {table}")  # noqa: S608 - identifiers are module constants; values are bound
                 }
                 already_present = len(existing)
                 added, skipped, blocked = [], [], []
@@ -270,11 +270,11 @@ def merge_learned(
                             superseded.append(stone)
                             continue
                         row = dest.execute(
-                            f"SELECT {', '.join(columns)} FROM {table} "
+                            f"SELECT {', '.join(columns)} FROM {table} "  # noqa: S608 - identifiers are module constants; values are bound
                             f"WHERE isin = ? AND {key_column} = ?", key).fetchone()
                         if apply:
                             dest.execute(
-                                f"DELETE FROM {table} WHERE isin = ? AND {key_column} = ?",
+                                f"DELETE FROM {table} WHERE isin = ? AND {key_column} = ?",  # noqa: S608 - identifiers are module constants; values are bound
                                 key)
                         del existing[key]
                         deleted.append(dict(row))
@@ -286,7 +286,7 @@ def merge_learned(
                         continue
                     if apply:
                         dest.execute(
-                            f"INSERT INTO learned_tombstones ({', '.join(TOMBSTONE_COLUMNS)}) "
+                            f"INSERT INTO learned_tombstones ({', '.join(TOMBSTONE_COLUMNS)}) "  # noqa: S608 - identifiers are module constants; values are bound
                             f"VALUES ({', '.join('?' for _ in TOMBSTONE_COLUMNS)}) "
                             "ON CONFLICT(table_name, isin, key_text) DO UPDATE SET "
                             "deleted_at = excluded.deleted_at, reason = excluded.reason, "
@@ -296,7 +296,7 @@ def merge_learned(
                     dest_tombstones[full_key] = stone
                     tombstoned.append(stone)
 
-                for row in src.execute(f"SELECT {', '.join(columns)} FROM {table}"):
+                for row in src.execute(f"SELECT {', '.join(columns)} FROM {table}"):  # noqa: S608 - identifiers are module constants; values are bound
                     key = tuple(row[c] for c in key_columns)
                     if key in existing:
                         continue
@@ -311,7 +311,7 @@ def merge_learned(
                         continue
                     if apply:
                         dest.execute(
-                            f"INSERT INTO {table} ({', '.join(columns)}) "
+                            f"INSERT INTO {table} ({', '.join(columns)}) "  # noqa: S608 - identifiers are module constants; values are bound
                             f"VALUES ({', '.join('?' for _ in columns)}) "
                             f"ON CONFLICT DO NOTHING",
                             tuple(row[c] for c in columns),
@@ -350,8 +350,13 @@ def merge_learned(
 
 
 def _label(row: dict) -> str:
-    return (row.get("alias_text") or row.get("title_text") or row.get("lei")
-            or row.get("key_text"))
+    label = (row.get("alias_text") or row.get("title_text") or row.get("lei")
+             or row.get("key_text"))
+    if label is None:
+        # Unreachable while every learned table's key column is NOT NULL;
+        # loud if a new table is added to LEARNED_TABLES without one.
+        raise ValueError(f"learned row has no key to label it by: {row!r}")
+    return label
 
 
 def _render(report: dict) -> str:
@@ -379,17 +384,14 @@ def _render(report: dict) -> str:
         if result["tombstones_added"]:
             notes.append(f"{result['tombstones_added']} deletion record(s) carried")
         lines.append(f"  {table:24} +{result['added']} ({', '.join(notes)})")
-        for row in result["added_rows"]:
-            lines.append(f"      + {row['isin']}  {_label(row)}")
-        for row in result["deleted_rows"]:
-            lines.append(f"      - {row['isin']}  {_label(row)}")
+        lines.extend(f"      + {row['isin']}  {_label(row)}" for row in result["added_rows"])
+        lines.extend(f"      - {row['isin']}  {_label(row)}" for row in result["deleted_rows"])
         for row in result["blocked_rows"]:
             reason = f"  ({row['deletion_reason']})" if row["deletion_reason"] else ""
             lines.append(
                 f"      x {row['isin']}  {_label(row)}  — deleted here "
                 f"{row['deleted_at']}{reason}")
-        for row in result["skipped_rows"]:
-            lines.append(f"      ! {row['isin']}  {_label(row)}")
+        lines.extend(f"      ! {row['isin']}  {_label(row)}" for row in result["skipped_rows"])
 
     lines.append("")
     verb = "merged" if report["applied"] else "would merge"

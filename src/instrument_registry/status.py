@@ -39,7 +39,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-from instrument_registry.backup import BACKUP_ROOT_ENV, DEFAULT_ROOT as DEFAULT_BACKUP_ROOT
+from instrument_registry.backup import BACKUP_ROOT_ENV
+from instrument_registry.backup import DEFAULT_ROOT as DEFAULT_BACKUP_ROOT
 from instrument_registry.backup import default_root as default_backup_root
 from instrument_registry.db.session import DEFAULT_DB_PATH
 
@@ -92,7 +93,7 @@ def _count(connection: sqlite3.Connection, table: str) -> int:
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
             (table,)).fetchone():
         return 0
-    return connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    return connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608 - identifiers are module constants; values are bound
 
 
 def _latest_backup(backup_root: Path) -> dict | None:
@@ -158,7 +159,7 @@ def status(
             ).fetchone()
             missing = {
                 column: connection.execute(
-                    f"SELECT COUNT(*) FROM instruments "
+                    f"SELECT COUNT(*) FROM instruments "  # noqa: S608 - identifiers are module constants; values are bound
                     f"WHERE instrument_type = ? AND {column} IS NULL",
                     (refresh["instrument_type"],),
                 ).fetchone()[0]
@@ -270,7 +271,7 @@ def status(
                     f"({backup['created_utc']}) — learned data is not recoverable "
                     "from any external source"
                 )
-        report["backup"]["shrunk"] = shrunk
+        backup["shrunk"] = shrunk  # the same dict as report["backup"]
 
     return report
 
@@ -305,10 +306,11 @@ def _format(report: dict) -> str:
 
     lines.append("")
     lines.append("tables:")
-    for table in UPSTREAM_TABLES:
-        lines.append(f"  {table:<24} {report['tables'][table]}")
-    for table in LEARNED_TABLES:
-        lines.append(f"  {table:<24} {report['tables'][table]}  (learned, irreplaceable)")
+    lines.extend(f"  {table:<24} {report['tables'][table]}" for table in UPSTREAM_TABLES)
+    lines.extend(
+        f"  {table:<24} {report['tables'][table]}  (learned, irreplaceable)"
+        for table in LEARNED_TABLES
+    )
 
     lines.append("")
     backup = report.get("backup")

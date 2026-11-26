@@ -5,8 +5,8 @@ resolves against: LEI (ISO 17442, entity-level) and ISIN (ISO 6166,
 instrument-level). See ~/Python/pothen_eshes/plans/T23-instrument-registry.md
 for the reasoning.
 """
-import sys
 import sqlite3
+import sys
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS entities (
@@ -184,7 +184,7 @@ def _add_column(
     columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
     if column not in columns:
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
-        print(
+        print(  # noqa: T201 - deliberate one-time stderr notice, see docstring
             f"instrument_registry: added {table}.{column} to an existing cache — "
             f"existing rows are NULL until backfilled; {backfill_hint}.",
             file=sys.stderr,

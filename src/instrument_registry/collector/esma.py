@@ -116,3 +116,5 @@ def _get_page(client: httpx.Client, params: dict) -> dict:
             if not retryable or attempt == _ATTEMPTS:
                 raise
             time.sleep(_RETRY_DELAY)
+    # Unreachable: the last attempt either returns or re-raises above.
+    raise RuntimeError(f"FIRDS page fetch made no attempt (_ATTEMPTS={_ATTEMPTS})")

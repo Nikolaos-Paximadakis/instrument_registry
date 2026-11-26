@@ -11,8 +11,8 @@ package can't destroy the cache. That matters mainly for
 aliases are not.
 """
 import os
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 
 from instrument_registry.db.models import create_schema
 
