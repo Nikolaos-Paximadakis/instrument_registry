@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from instrument_registry.collector.athex import (
     AthexBond,
@@ -23,6 +25,9 @@ from instrument_registry.collector.athex import (
 from instrument_registry.collector.esma import FirdsBond, fetch_firds_athens_bonds
 from instrument_registry.collector.gleif import lookup_lei_by_isin
 from instrument_registry.db.session import connect
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,6 +420,21 @@ def _clear_tombstone(
     )
 
 
+@contextmanager
+def _rejecting_unknown_isin(isin: str) -> Generator[None]:
+    """Turns the FK violation from writing a learned row for an isin that
+    isn't in `instruments` into a ValueError naming it (#33)."""
+    try:
+        yield
+    except sqlite3.IntegrityError as exc:
+        if "FOREIGN KEY" not in str(exc):
+            raise
+        raise ValueError(
+            f"unknown isin {isin!r}: no such instrument in this cache "
+            "(resolve it via a lookup/match first, or refresh)"
+        ) from exc
+
+
 def _delete_with_tombstone(
     connection: sqlite3.Connection,
     table: str,
@@ -471,23 +491,24 @@ def add_alias(
     `source`/`confidence` rather than duplicating — but keeps the row's
     original `created_at`, which means "first learned", not "last
     re-asserted" (restamping it destroyed the evidence in a real incident,
-    see #22). Silently a no-op for an unknown isin (FK constraint —
-    callers are expected to have already resolved the isin via a match).
+    see #22). Raises ValueError for an isin not in `instruments` (the FK
+    is enforced since #33) — resolve it via a lookup/match first.
     Clears any tombstone this copy holds for the same key (see
     `remove_alias()`)."""
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
     try:
-        connection.execute(
-            """
-            INSERT INTO instrument_aliases (isin, alias_text, source, confidence, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(isin, alias_text) DO UPDATE SET
-                source = excluded.source,
-                confidence = excluded.confidence
-            """,
-            (isin, alias_text, source, confidence, now),
-        )
+        with _rejecting_unknown_isin(isin):
+            connection.execute(
+                """
+                INSERT INTO instrument_aliases (isin, alias_text, source, confidence, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(isin, alias_text) DO UPDATE SET
+                    source = excluded.source,
+                    confidence = excluded.confidence
+                """,
+                (isin, alias_text, source, confidence, now),
+            )
         _clear_tombstone(connection, "instrument_aliases", isin, alias_text)
         connection.commit()
     finally:
@@ -623,24 +644,23 @@ def exclude_title_match(
     exclusion is looked up by exact normalized string, not re-scored.
     Upserts on (isin, title_text), so re-recording the same correction
     refreshes `reason` rather than duplicating, keeping the original
-    `created_at` (see `add_alias()`). Note `isin`'s FK reference isn't
-    actually enforced (this connection never sets `PRAGMA foreign_keys =
-    ON`, same as `add_alias()`) — a typo'd isin is stored as-is rather
-    than rejected, so double-check the isin came from a real match.
+    `created_at` (see `add_alias()`). Raises ValueError for an isin not
+    in `instruments`, as `add_alias()` does.
     Clears any tombstone for the pair, as `add_alias()` does."""
     now = datetime.now(UTC).isoformat()
     normalized_title = title_text.strip().casefold()
     connection = connect(db_path)
     try:
-        connection.execute(
-            """
-            INSERT INTO title_isin_exclusions (isin, title_text, reason, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(isin, title_text) DO UPDATE SET
-                reason = excluded.reason
-            """,
-            (isin, normalized_title, reason, now),
-        )
+        with _rejecting_unknown_isin(isin):
+            connection.execute(
+                """
+                INSERT INTO title_isin_exclusions (isin, title_text, reason, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(isin, title_text) DO UPDATE SET
+                    reason = excluded.reason
+                """,
+                (isin, normalized_title, reason, now),
+            )
         _clear_tombstone(connection, "title_isin_exclusions", isin, normalized_title)
         connection.commit()
     finally:

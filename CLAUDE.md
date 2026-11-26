@@ -116,6 +116,12 @@ fills those in. Before any destructive operation on the cache, back it up first 
   `${XDG_DATA_HOME:-~/.local/share}/instrument_registry/instrument_registry.db`,
   precisely so a clean or re-clone can't destroy the learned aliases. Every public
   function takes `db_path=` to override it; tests always pass a `tmp_path`.
+- **Foreign keys are enforced only because `connect()` sets `PRAGMA foreign_keys = ON`**
+  (#33); SQLite defaults it off per connection. Any new writable connection that bypasses
+  `connect()` must set it too. A test seeding a child row (an instrument with a `lei`, an
+  alias) must seed the parent first. Enforcement only checks writes: rows orphaned before
+  it, or carried in by `import_snapshot()` (a page copy), stay — `--status` runs
+  `PRAGMA foreign_key_check` and reports them as problems.
 - **`refresh_gleif()` only re-queries rows with `lei IS NULL`.** That means hand-nulling
   a bad link is exactly what makes the next refresh retry it — which is why
   `blacklist_lei()` exists rather than manual SQL. Blacklisting is keyed on the

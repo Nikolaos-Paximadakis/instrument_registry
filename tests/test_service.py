@@ -206,13 +206,13 @@ def test_fuzzy_match_title_scored_reflects_the_candidate_that_actually_matched(t
     # recomputing its own ratio against only instrument.name would get a
     # wrong, misleadingly low number (a real bug found live 2026-07-19).
     db_path = tmp_path / "registry.db"
-    _seed_instrument(
-        db_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA", lei="5UMCZOEYKCVFAW8ZLO05"
-    )
     _seed_entity(
         db_path,
         lei="5UMCZOEYKCVFAW8ZLO05",
         legal_name="ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ Α.Ε.",
+    )
+    _seed_instrument(
+        db_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA", lei="5UMCZOEYKCVFAW8ZLO05"
     )
     connection = connect(db_path)
     connection.execute(
@@ -233,16 +233,16 @@ def test_fuzzy_match_title_scored_reflects_the_candidate_that_actually_matched(t
 
 def test_fuzzy_match_title_falls_back_to_the_linked_entitys_greek_name(tmp_path):
     db_path = tmp_path / "registry.db"
+    _seed_entity(
+        db_path,
+        lei="5UMCZOEYKCVFAW8ZLO05",
+        legal_name="ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ Α.Ε.",
+    )
     _seed_instrument(
         db_path,
         isin="GRS003003035",
         name="NAT. BANK OF GREECE SA",
         lei="5UMCZOEYKCVFAW8ZLO05",
-    )
-    _seed_entity(
-        db_path,
-        lei="5UMCZOEYKCVFAW8ZLO05",
-        legal_name="ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ Α.Ε.",
     )
 
     matches = fuzzy_match_title("ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ", threshold=0.6, db_path=db_path)
@@ -263,6 +263,7 @@ def test_fuzzy_match_title_respects_instrument_type_filter(tmp_path):
 
 def test_refresh_athex_upserts_without_clobbering_existing_lei(tmp_path, monkeypatch):
     db_path = tmp_path / "registry.db"
+    _seed_entity(db_path, lei="5UMCZOEYKCVFAW8ZLO05", legal_name="NATIONAL BANK OF GREECE S.A.")
     _seed_instrument(
         db_path, isin="GRS003003035", name="OLD NAME", lei="5UMCZOEYKCVFAW8ZLO05"
     )
@@ -389,6 +390,7 @@ def test_refresh_athex_etfs_backfills_the_symbol_of_a_row_that_lacks_one(
 
 def test_refresh_athex_etfs_does_not_clobber_an_existing_lei(tmp_path, monkeypatch):
     db_path = tmp_path / "registry.db"
+    _seed_entity(db_path, lei="5UMCZOEYKCVFAW8ZLO05", legal_name="NATIONAL BANK OF GREECE S.A.")
     _seed_instrument(
         db_path, isin="GRF000153004", name="OLD NAME", lei="5UMCZOEYKCVFAW8ZLO05"
     )
@@ -1301,6 +1303,7 @@ def test_refresh_athex_bonds_does_not_clobber_an_existing_lei(tmp_path, monkeypa
     db_path = tmp_path / "registry.db"
     _patch_bond_sources(monkeypatch, [_athex_bond()], [_firds_bond()])
     refresh_athex_bonds(db_path=db_path)
+    _seed_entity(db_path, lei="LEI123", legal_name="SOME ISSUER")
     connection = connect(db_path)
     connection.execute("UPDATE instruments SET lei = 'LEI123' WHERE isin = 'GRC0000000A1'")
     connection.commit()
@@ -1417,3 +1420,77 @@ def test_firds_fetch_fails_loudly_when_paging_loses_or_repeats_rows(monkeypatch)
     monkeypatch.setattr(esma, "_get_page", lambda c, p: {"docs": [doc] if p["start"] == 0 else [], "numFound": 3})
     with pytest.raises(RuntimeError, match="paging"):
         esma.fetch_firds_athens_bonds()
+
+
+def test_connect_enforces_foreign_keys(tmp_path):
+    # Canary for #33: SQLite ignores REFERENCES unless every connection
+    # turns this on, and it silently defaults to off.
+    connection = connect(tmp_path / "registry.db")
+    try:
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def test_a_typod_isin_is_rejected_by_every_learned_write_that_references_it(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA")
+
+    with pytest.raises(ValueError, match="unknown isin 'GRS00300303X'"):
+        add_alias("GRS00300303X", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ", source="test", db_path=db_path)
+    with pytest.raises(ValueError, match="unknown isin 'GRS00300303X'"):
+        exclude_title_match("GRS00300303X", "SOME TITLE", reason="test", db_path=db_path)
+
+    connection = connect(db_path)
+    try:
+        for table in ("instrument_aliases", "title_isin_exclusions", "learned_tombstones"):
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    finally:
+        connection.close()
+    # lei_blacklist deliberately has no FK: a blacklisted pair is about
+    # GLEIF's data, and stays valid even if the ISIN isn't cached here.
+    blacklist_lei("GRS00300303X", "213800OYHR1MPQ5VJL60", db_path=db_path)
+    assert len(list_blacklisted(db_path=db_path)) == 1
+
+
+def test_a_typod_lei_link_is_rejected(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed_instrument(db_path, isin="GRS003003035", name="NAT. BANK OF GREECE SA")
+    connection = connect(db_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            connection.execute("UPDATE instruments SET lei = 'NOSUCHLEI' WHERE isin = 'GRS003003035'")
+    finally:
+        connection.close()
+
+
+def test_import_snapshot_is_a_page_copy_that_enforcement_neither_blocks_nor_checks(tmp_path):
+    # A wholesale import replaces the target's pages via backup(), so the
+    # target's enforcement can't refuse it — not for an overwrite whose old
+    # aliases point at instruments the snapshot lacks, and not for an
+    # orphan the snapshot carries in. --status is what finds the latter.
+    source_path = tmp_path / "source.db"
+    _seed_instrument(source_path, isin="GRS003003035", name="NEW DATA")
+    raw = sqlite3.connect(source_path)  # foreign_keys OFF: seed an orphan
+    raw.execute(
+        "INSERT INTO instrument_aliases (isin, alias_text, source, created_at) "
+        "VALUES ('GRS000TYPO00', 'X', 'test', '2026-01-01T00:00:00+00:00')")
+    raw.commit()
+    raw.close()
+    snapshot = export_snapshot(db_path=source_path)
+
+    target_path = tmp_path / "target.db"
+    _seed_instrument(target_path, isin="GRS831003009", name="OLD DATA")
+    add_alias("GRS831003009", "OLD ALIAS", source="test", db_path=target_path)
+
+    import_snapshot(snapshot, db_path=target_path, overwrite=True)
+
+    assert lookup_by_isin("GRS831003009", db_path=target_path) is None
+    assert [a.alias_text for a in list_aliases("GRS000TYPO00", db_path=target_path)] == ["X"]
+    connection = connect(target_path)
+    try:
+        assert len(connection.execute("PRAGMA foreign_key_check").fetchall()) == 1
+    finally:
+        connection.close()
+    with pytest.raises(ValueError, match="unknown isin"):
+        add_alias("GRS831003009", "OLD ALIAS", source="test", db_path=target_path)

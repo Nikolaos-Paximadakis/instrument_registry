@@ -141,6 +141,7 @@ class Report(TypedDict):
     gleif: GleifCounts
     backup: BackupInfo | None
     backup_root: str
+    foreign_key_violations: dict[str, int]
 
 
 StatusReport = MissingReport | Report
@@ -299,6 +300,22 @@ def status(
                 "SELECT COUNT(*) FROM instruments WHERE lei IS NULL").fetchone()[0],
             "blacklisted_pairs": _count(connection, "lei_blacklist"),
         }
+
+        # Writes have enforced the schema's REFERENCES since #33, but only
+        # going forward: a row orphaned before that, or carried in whole by
+        # import_snapshot() (a page copy, which no FK check sees), stays
+        # put. This is the check that finds one. Works read-only.
+        foreign_key_violations: dict[str, int] = {}
+        parents: dict[str, set[str]] = {}
+        for violation in connection.execute("PRAGMA foreign_key_check"):
+            table, parent = str(violation[0]), str(violation[2])
+            foreign_key_violations[table] = foreign_key_violations.get(table, 0) + 1
+            parents.setdefault(table, set()).add(parent)
+        problems.extend(
+            f"{count} row(s) in {table} reference a missing "
+            f"{'/'.join(sorted(parents[table]))} row (PRAGMA foreign_key_check)"
+            for table, count in sorted(foreign_key_violations.items())
+        )
     finally:
         connection.close()
 
@@ -343,6 +360,7 @@ def status(
         "gleif": gleif,
         "backup": backup,
         "backup_root": str(backup_root),
+        "foreign_key_violations": foreign_key_violations,
     }
 
 

@@ -150,6 +150,14 @@ feed's shape is still unverified — nothing to fetch yet.
   wiped the evidence in a real incident: four aliases re-added on
   2026-08-16 came out looking brand new, and a timestamp safeguard for
   `--merge-learned` fired on 0 of those 4 rows (#22).
+- **Foreign keys are enforced** (#33): `connect()` turns on `PRAGMA
+  foreign_keys`, which SQLite leaves off by default, so until then the
+  schema's `REFERENCES` clauses were decorative. `add_alias()` and
+  `exclude_title_match()` now raise `ValueError("unknown isin ...")`
+  for an isin not in `instruments` instead of storing an alias no
+  lookup can reach. `blacklist_lei()` has no FK on purpose and still
+  accepts any isin. Only writes are checked: a row orphaned earlier
+  stays put, and `--status` reports it.
 - `exclude_title_match(isin, title_text, reason=None, db_path=None) -> None`
   — the inverse of `add_alias()`: records that `title_text` must never
   fuzzy-match `isin` again, even if its computed ratio would otherwise
@@ -207,7 +215,9 @@ feed's shape is still unverified — nothing to fetch yet.
   unless `overwrite=True` — a snapshot import is a destructive
   operation CLAUDE.md's "back it up first" rule applies to, and the
   three learned tables can't be recovered if it clobbers them by
-  accident.
+  accident. The page copy is not FK-checked: foreign-key enforcement
+  neither blocks the import nor validates it, so an orphan in the
+  snapshot arrives as-is. Run `--status` afterwards.
 
 ## Installation
 
@@ -422,6 +432,10 @@ history:
   this check against a path it could never have (#21). A missing backup
   stays a problem wherever the root points: the env var relocates the
   check, it doesn't silence it.
+- **does every reference resolve?** — `PRAGMA foreign_key_check`, one
+  problem per table with orphaned rows (`foreign_key_violations` in
+  `--json`). Writes have been FK-checked only since #33, so this is how
+  an older or imported cache gets checked.
 
 A NULL `lei` is reported but never counted as a problem — plenty of
 smaller Greek issuers have no registered LEI at all, and `refresh_gleif()`
