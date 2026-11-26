@@ -356,3 +356,40 @@ def test_status_reports_a_bond_missing_the_columns_the_bond_refresh_owns(tmp_pat
     bonds = next(r for r in report["refreshes"] if r["instrument_type"] == "bond")
     assert bonds["state"] == "needs re-run"
     assert bonds["missing"] == {"cfi_code": 1, "currency": 1}
+
+
+def test_status_reports_no_foreign_key_violations_on_a_clean_cache(tmp_path):
+    db_path = tmp_path / "registry.db"
+    _seed(db_path)
+    add_alias("GRS003003035", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ", source="test", db_path=db_path)
+
+    report = _status(db_path=db_path, backup_root=tmp_path / "nowhere")
+
+    assert report["foreign_key_violations"] == {}
+    assert not any("foreign_key_check" in p for p in report["problems"])
+
+
+def test_status_reports_a_row_orphaned_before_enforcement(tmp_path):
+    # Enforcement (#33) only guards writes from here on; a row orphaned
+    # earlier, or carried in by import_snapshot()'s page copy, stays, and
+    # this is how the deployed cache gets checked for one.
+    db_path = tmp_path / "registry.db"
+    _seed(db_path)
+    raw = sqlite3.connect(db_path)  # foreign_keys is OFF on a raw connection
+    raw.execute(
+        "INSERT INTO instrument_aliases (isin, alias_text, source, created_at) "
+        "VALUES ('GRS000TYPO00', 'X', 'test', '2026-01-01T00:00:00+00:00')")
+    raw.execute("UPDATE instruments SET lei = 'NOSUCHLEI' WHERE isin = 'GRS003003035'")
+    raw.commit()
+    raw.close()
+
+    report = _status(db_path=db_path, backup_root=tmp_path / "nowhere")
+
+    assert report["foreign_key_violations"] == {"instrument_aliases": 1, "instruments": 1}
+    assert any(
+        "1 row(s) in instrument_aliases reference a missing instruments row" in p
+        for p in report["problems"])
+    assert any(
+        "1 row(s) in instruments reference a missing entities row" in p
+        for p in report["problems"])
+    assert status_mod.main(["--db-path", str(db_path), "--backup-root", str(tmp_path)]) == 1

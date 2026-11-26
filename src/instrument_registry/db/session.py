@@ -25,5 +25,11 @@ def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
+    # SQLite ignores the schema's REFERENCES clauses unless this is set, per
+    # connection, outside a transaction — so before create_schema() (#33).
+    # A typo'd isin passed to add_alias()/exclude_title_match() is then
+    # rejected instead of stored. Rows that were already orphaned are
+    # tolerated (only writes are checked); `--status` reports them.
+    connection.execute("PRAGMA foreign_keys = ON")
     create_schema(connection)
     return connection
