@@ -416,3 +416,29 @@ def test_preview_lists_deletions_and_blocked_rows(tmp_path, capsys):
     assert "- GRS003003035  STALE IN DEST" in out
     assert "x GRS003003035  STALE IN SOURCE" in out
     assert "(bad)" in out
+
+
+def test_tombstone_typeddict_matches_tombstone_columns():
+    # _tombstone_values() lists the fields by hand for the INSERT, in
+    # TOMBSTONE_COLUMNS order; this keeps the two from drifting apart.
+    from instrument_registry.merge import (
+        TOMBSTONE_COLUMNS,
+        Tombstone,
+        _tombstone_values,
+    )
+
+    assert tuple(Tombstone.__annotations__) == TOMBSTONE_COLUMNS
+    stone: Tombstone = {
+        "table_name": "v-table_name", "isin": "v-isin", "key_text": "v-key_text",
+        "deleted_at": "v-deleted_at", "reason": "v-reason", "row_json": "v-row_json",
+    }
+    assert _tombstone_values(stone) == tuple(f"v-{c}" for c in TOMBSTONE_COLUMNS)
+
+
+def test_every_learned_table_is_keyed_by_isin_and_one_column():
+    # merge_learned() builds each natural key as (isin, key_column).
+    from instrument_registry.merge import LEARNED_TABLES
+
+    for key_columns, _columns in LEARNED_TABLES.values():
+        assert len(key_columns) == 2
+        assert key_columns[0] == "isin"

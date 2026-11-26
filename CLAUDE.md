@@ -19,7 +19,7 @@ uv run pytest                              # full suite, never touches the netwo
 uv run pytest tests/test_service.py::test_refresh_gleif_does_not_relink_a_blacklisted_pair
 INSTRUMENT_REGISTRY_LIVE_TESTS=1 uv run pytest    # also runs the real ATHEX/GLEIF tests
 uv run ruff check src tests                # lint (config in pyproject.toml)
-uv run pyright                             # type check: standard, strict for listed files
+uv run pyright                             # type check, strict over all of src/
 python -m instrument_registry --refresh-athex     # fetch + upsert ATHEX's stock list
 python -m instrument_registry --refresh-gleif     # link LEIs for instruments missing one
 python -m instrument_registry --backup            # back up the local cache DB (see BACKUP.md)
@@ -28,8 +28,9 @@ python -m instrument_registry --merge-learned <snapshot.db>   # reconcile two co
 ```
 
 ruff and pyright are configured (added 2026-11-26, #32), following the global
-`python-strict` baseline: pyright is `standard` over `src/` with a per-file `strict`
-list that only grows. A file joins it once it passes, and none leaves it. Greek
+`python-strict` baseline: pyright is `strict` over all of `src/`, so a new file
+starts out strict. External JSON goes through `collector/_json.py`'s validating
+accessors, never raw `response.json()` indexing, and report dicts are TypedDicts. Greek
 confusable-character rules (RUF001-003) are off on purpose. No formatter is
 configured, so don't add one, or run `ruff format`, without asking. An ignore names
 its rule and gives a reason on the same line.

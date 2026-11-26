@@ -65,22 +65,8 @@ ignore = [
 [tool.pyright]
 include = ["src"]
 pythonVersion = "3.12"
-# Ratcheting toward strict (#32): standard everywhere, and a file joins `strict`
-# once it passes. Strict over all of src/ measured 167 errors on 2026-11-14,
-# 144 of them Unknown-type cascades from untyped sqlite3.Row / json access.
-typeCheckingMode = "standard"
-strict = [
-    "src/instrument_registry/__init__.py",
-    "src/instrument_registry/__main__.py",
-    "src/instrument_registry/collector/__init__.py",
-    "src/instrument_registry/collector/_json.py",
-    "src/instrument_registry/collector/athex.py",
-    "src/instrument_registry/collector/esma.py",
-    "src/instrument_registry/collector/gleif.py",
-    "src/instrument_registry/db/__init__.py",
-    "src/instrument_registry/db/models.py",
-    "src/instrument_registry/db/session.py",
-    "src/instrument_registry/service.py",
-]
+# Strict over all of src/ since 2026-11-26 (#32): reached by typing the
+# collectors' JSON boundary and the status/merge/backup report structures.
+typeCheckingMode = "strict"
 enableTypeIgnoreComments = false
 reportUnnecessaryTypeIgnoreComment = "error"
