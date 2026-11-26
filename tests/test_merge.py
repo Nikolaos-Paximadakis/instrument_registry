@@ -121,7 +121,7 @@ def test_merge_leaves_upstream_tables_alone(tmp_path):
     # stale snapshot would plant rows upstream no longer agrees with.
     source, dest = tmp_path / "source.db", tmp_path / "dest.db"
     _seed_instrument(source)
-    _seed_instrument(source, isin="GRS111111111", name="DELISTED CO")
+    _seed_instrument(source, isin="GRS111111118", name="DELISTED CO")
     _seed_instrument(dest)
 
     merge_mod.merge_learned(source, dest, apply=True)
@@ -139,9 +139,9 @@ def test_merge_skips_and_reports_a_row_whose_isin_the_destination_lacks(tmp_path
     # a success message on top.
     source, dest = tmp_path / "source.db", tmp_path / "dest.db"
     _seed_instrument(source)
-    _seed_instrument(source, isin="GRS111111111", name="NOT IN DEST")
+    _seed_instrument(source, isin="GRS111111118", name="NOT IN DEST")
     _seed_instrument(dest)
-    add_alias("GRS111111111", "ORPHAN ALIAS", source="s", db_path=source)
+    add_alias("GRS111111118", "ORPHAN ALIAS", source="s", db_path=source)
 
     report = merge_mod.merge_learned(source, dest, apply=True)
 
@@ -149,7 +149,7 @@ def test_merge_skips_and_reports_a_row_whose_isin_the_destination_lacks(tmp_path
     assert aliases["added"] == 0
     assert aliases["skipped_unknown_isin"] == 1
     assert aliases["skipped_rows"][0]["alias_text"] == "ORPHAN ALIAS"
-    assert ("GRS111111111", "ORPHAN ALIAS") not in _aliases(dest)
+    assert ("GRS111111118", "ORPHAN ALIAS") not in _aliases(dest)
 
 
 def test_blacklist_merges_without_needing_the_instrument(tmp_path):
@@ -157,9 +157,9 @@ def test_blacklist_merges_without_needing_the_instrument(tmp_path):
     # pair outlives its instrument — so it must not be skipped like the
     # other two.
     source, dest = tmp_path / "source.db", tmp_path / "dest.db"
-    _seed_instrument(source, isin="GRS111111111", name="NOT IN DEST")
+    _seed_instrument(source, isin="GRS111111118", name="NOT IN DEST")
     _seed_instrument(dest)
-    blacklist_lei("GRS111111111", "5299009N55YRQC69CN08", reason="wrong", db_path=source)
+    blacklist_lei("GRS111111118", "5299009N55YRQC69CN08", reason="wrong", db_path=source)
 
     report = merge_mod.merge_learned(source, dest, apply=True)
 

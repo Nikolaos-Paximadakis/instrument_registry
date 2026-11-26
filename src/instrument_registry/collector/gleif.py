@@ -21,8 +21,10 @@ from instrument_registry.collector._json import (
     opt_object,
     opt_objects,
     opt_str,
+    req_lei,
     req_str,
 )
+from instrument_registry.identifiers import Lei
 
 LEI_RECORDS_URL = "https://api.gleif.org/api/v1/lei-records"
 
@@ -31,7 +33,7 @@ _HEADERS = {"Accept": "application/vnd.api+json"}
 
 @dataclass(frozen=True, slots=True)
 class GleifEntity:
-    lei: str
+    lei: Lei
     legal_name: str
     other_names: list[str]
     country: str | None
@@ -61,7 +63,7 @@ def lookup_lei_by_isin(isin: str, *, timeout: float = 15.0) -> GleifEntity | Non
     address = opt_object(entity, "legalAddress", f"{where}.entity")
 
     return GleifEntity(
-        lei=req_str(attributes, "lei", where),
+        lei=req_lei(attributes, "lei", where),
         legal_name=req_str(as_object(entity.get("legalName"), f"{where}.entity.legalName"), "name", where),
         other_names=other_names,
         country=opt_str(address, "country", f"{where}.entity.legalAddress") if address is not None else None,

@@ -63,7 +63,7 @@ def test_issuer_full_name_falls_back_to_issuer_when_absent_or_null():
 
 def test_firds_bond_parses_a_record_and_rejects_a_wrong_typed_one():
     doc = {
-        "id": "x1", "isin": "GRC1451184D5", "gnr_full_name": "GGB1", "mic": "XATH",
+        "id": "x1", "isin": "GRC145118422", "gnr_full_name": "GGB1", "mic": "XATH",
         "gnr_cfi_code": "DBFTFB", "gnr_notional_curr_code": "EUR",
         "bnd_maturity_date": "2034-06-15T00:00:00Z", "status": None,
     }
@@ -86,3 +86,14 @@ def test_gleif_name_arrays_treat_null_as_empty_but_reject_other_falsy_values():
     assert opt_object({"legalAddress": None}, "legalAddress", "e") is None
     with pytest.raises(FeedShapeError):
         opt_object({"legalAddress": False}, "legalAddress", "e")
+
+
+def test_collectors_refuse_an_identifier_that_fails_its_check_digit():
+    from instrument_registry.collector._json import req_isin, req_lei
+
+    assert req_isin({"ISIN": "GRS003003035"}, "ISIN", "row") == "GRS003003035"
+    with pytest.raises(FeedShapeError, match=r"row\.ISIN: not a valid ISIN: 'GRS003003036'"):
+        req_isin({"ISIN": "GRS003003036"}, "ISIN", "row")
+    assert req_lei({"lei": "5UMCZOEYKCVFAW8ZLO05"}, "lei", "r") == "5UMCZOEYKCVFAW8ZLO05"
+    with pytest.raises(FeedShapeError, match="not a valid LEI"):
+        req_lei({"lei": "5UMCZOEYKCVFAW8ZLO06"}, "lei", "r")

@@ -38,8 +38,10 @@ from instrument_registry.collector._json import (
     as_objects,
     opt_str,
     req_int,
+    req_isin,
     req_str,
 )
+from instrument_registry.identifiers import Isin
 
 FIRDS_URL = "https://registers.esma.europa.eu/solr/esma_registers_firds/select"
 
@@ -56,7 +58,7 @@ _RETRY_DELAY = 2.0
 
 @dataclass(frozen=True, slots=True)
 class FirdsBond:
-    isin: str
+    isin: Isin
     symbol: str
     mic: str
     cfi_code: str | None
@@ -104,7 +106,7 @@ def fetch_firds_athens_bonds(*, timeout: float = 60.0) -> list[FirdsBond]:
 def _firds_bond(doc: JsonObject, where: str) -> FirdsBond:
     maturity = opt_str(doc, "bnd_maturity_date", where)
     return FirdsBond(
-        isin=req_str(doc, "isin", where),
+        isin=req_isin(doc, "isin", where),
         symbol=req_str(doc, "gnr_full_name", where),
         mic=req_str(doc, "mic", where),
         cfi_code=opt_str(doc, "gnr_cfi_code", where),

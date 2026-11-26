@@ -25,6 +25,7 @@ from instrument_registry.collector.athex import (
 from instrument_registry.collector.esma import FirdsBond, fetch_firds_athens_bonds
 from instrument_registry.collector.gleif import lookup_lei_by_isin
 from instrument_registry.db.session import connect
+from instrument_registry.identifiers import Isin, Lei, parse_isin, parse_lei
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -32,13 +33,13 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class Instrument:
-    isin: str
+    isin: Isin
     name: str
     other_names: list[str]
     cfi_code: str | None
     instrument_type: str | None
     currency: str | None
-    lei: str | None
+    lei: Lei | None
     source: str
     symbol: str | None
     #: See `instruments.last_seen_in_feed` in db/models.py.
@@ -47,7 +48,7 @@ class Instrument:
 
 @dataclass(frozen=True, slots=True)
 class Entity:
-    lei: str
+    lei: Lei
     legal_name: str
     other_names: list[str]
     country: str | None
@@ -57,7 +58,7 @@ class Entity:
 
 @dataclass(frozen=True, slots=True)
 class Alias:
-    isin: str
+    isin: Isin
     alias_text: str
     source: str
     confidence: float | None
@@ -66,15 +67,15 @@ class Alias:
 
 @dataclass(frozen=True, slots=True)
 class BlacklistEntry:
-    isin: str
-    lei: str
+    isin: Isin
+    lei: Lei
     reason: str | None
     created_at: str
 
 
 @dataclass(frozen=True, slots=True)
 class TitleExclusion:
-    isin: str
+    isin: Isin
     title_text: str
     reason: str | None
     created_at: str
@@ -495,6 +496,7 @@ def add_alias(
     is enforced since #33) — resolve it via a lookup/match first.
     Clears any tombstone this copy holds for the same key (see
     `remove_alias()`)."""
+    isin = parse_isin(isin)  # ValueError on a typo'd or swapped identifier
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
     try:
@@ -535,6 +537,8 @@ def blacklist_lei(
     Re-blacklisting an existing pair refreshes `reason` but keeps the
     original `created_at` (see `add_alias()`). Clears any tombstone for
     the pair, as `add_alias()` does."""
+    isin = parse_isin(isin)  # ValueError on a typo'd or swapped identifier
+    lei = parse_lei(lei)  # ValueError on a typo'd or swapped identifier
     now = datetime.now(UTC).isoformat()
     connection = connect(db_path)
     try:
@@ -572,6 +576,7 @@ def remove_alias(
     written even if no such row exists here — that is how to record a
     cleanup another copy hasn't had yet. Re-adding the alias later clears
     it."""
+    isin = parse_isin(isin)  # ValueError on a typo'd or swapped identifier
     connection = connect(db_path)
     try:
         _delete_with_tombstone(
@@ -594,6 +599,8 @@ def unblacklist_lei(
     `remove_alias()` does. Does not relink the LEI itself: the next
     `refresh_gleif()` run picks it up naturally, since that function only
     re-queries instruments with `lei IS NULL`."""
+    isin = parse_isin(isin)  # ValueError on a typo'd or swapped identifier
+    lei = parse_lei(lei)  # ValueError on a typo'd or swapped identifier
     connection = connect(db_path)
     try:
         _delete_with_tombstone(connection, "lei_blacklist", "lei", isin, lei, reason)
@@ -615,6 +622,7 @@ def remove_title_exclusion(
     (stripped + casefolded) the same way `exclude_title_match()` stores
     it, so the same original string (regardless of casing/whitespace)
     removes the same row."""
+    isin = parse_isin(isin)  # ValueError on a typo'd or swapped identifier
     connection = connect(db_path)
     try:
         _delete_with_tombstone(
@@ -647,6 +655,7 @@ def exclude_title_match(
     `created_at` (see `add_alias()`). Raises ValueError for an isin not
     in `instruments`, as `add_alias()` does.
     Clears any tombstone for the pair, as `add_alias()` does."""
+    isin = parse_isin(isin)  # ValueError on a typo'd or swapped identifier
     now = datetime.now(UTC).isoformat()
     normalized_title = title_text.strip().casefold()
     connection = connect(db_path)
