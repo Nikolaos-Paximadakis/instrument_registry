@@ -431,15 +431,16 @@ def _delete_with_tombstone(
     recorded. Re-deleting keeps the original `deleted_at`, for the same
     reason `add_alias()` keeps `created_at`."""
     row = connection.execute(
-        f"SELECT * FROM {table} WHERE isin = ? AND {key_column} = ?", (isin, key_text)
+        f"SELECT * FROM {table} WHERE isin = ? AND {key_column} = ?", (isin, key_text)  # noqa: S608 - identifiers are module constants; values are bound
     ).fetchone()
     connection.execute(
-        f"DELETE FROM {table} WHERE isin = ? AND {key_column} = ?", (isin, key_text)
+        f"DELETE FROM {table} WHERE isin = ? AND {key_column} = ?", (isin, key_text)  # noqa: S608 - identifiers are module constants; values are bound
     )
     row_json = None
     if row is not None:
         row_json = json.dumps(
-            {k: row[k] for k in row.keys() if k != "alias_id"}, ensure_ascii=False
+            {k: row[k] for k in row.keys() if k != "alias_id"},  # noqa: SIM118 - iterating a sqlite3.Row yields values, not keys
+            ensure_ascii=False,
         )
     connection.execute(
         """
@@ -702,7 +703,7 @@ def import_snapshot(
         try:
             if not overwrite:
                 counts = [
-                    target.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    target.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608 - identifiers are module constants; values are bound
                     for table in (
                         "instruments", "entities", "instrument_aliases",
                         "lei_blacklist", "title_isin_exclusions",

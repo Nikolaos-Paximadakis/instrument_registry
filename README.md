@@ -472,6 +472,19 @@ confirm the collectors still work against them:
 INSTRUMENT_REGISTRY_LIVE_TESTS=1 uv run pytest
 ```
 
+Static checks, which gate a merge alongside the tests:
+
+```bash
+uv run ruff check src tests
+uv run pyright
+```
+
+pyright runs in `standard` mode over `src/`, with the files listed under
+`strict` in `pyproject.toml` held to `strict`. The rest move into that list
+as their untyped `sqlite3.Row`/JSON boundaries get typed (#32). pytest
+turns warnings into errors. The package ships `py.typed`, so a consumer's
+type checker sees these annotations.
+
 ## Notes
 
 - Used in-process by consumers (e.g. `pothen_eshes`); not an HTTP

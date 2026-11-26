@@ -6,7 +6,11 @@ import os
 
 import pytest
 
-from instrument_registry.collector.athex import fetch_athex_bonds, fetch_athex_etfs, fetch_athex_stocks
+from instrument_registry.collector.athex import (
+    fetch_athex_bonds,
+    fetch_athex_etfs,
+    fetch_athex_stocks,
+)
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("INSTRUMENT_REGISTRY_LIVE_TESTS"),

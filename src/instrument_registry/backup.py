@@ -36,7 +36,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from instrument_registry.db.session import DEFAULT_DB_PATH
@@ -76,12 +76,12 @@ TABLES = [
 
 
 def _utc_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
 
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    with open(path, "rb") as f:
+    with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -97,8 +97,8 @@ def _git_head(repo_root: Path) -> str | None:
     # in the image) — the one cache that had never been backed up at all,
     # and the only copy of any alias added through that app's own UI.
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell, no outside input
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],  # noqa: S607 - git from PATH by design; absent git degrades to None
             capture_output=True, text=True,
         )
     except OSError:
@@ -110,7 +110,7 @@ def _row_counts(db_path: Path) -> dict:
     connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         return {
-            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608 - identifiers are module constants; values are bound
             for table in TABLES
         }
     finally:

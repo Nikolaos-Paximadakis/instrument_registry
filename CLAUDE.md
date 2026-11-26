@@ -18,6 +18,8 @@ uv sync                                    # install/reproduce env from uv.lock
 uv run pytest                              # full suite, never touches the network
 uv run pytest tests/test_service.py::test_refresh_gleif_does_not_relink_a_blacklisted_pair
 INSTRUMENT_REGISTRY_LIVE_TESTS=1 uv run pytest    # also runs the real ATHEX/GLEIF tests
+uv run ruff check src tests                # lint (config in pyproject.toml)
+uv run pyright                             # type check: standard, strict for listed files
 python -m instrument_registry --refresh-athex     # fetch + upsert ATHEX's stock list
 python -m instrument_registry --refresh-gleif     # link LEIs for instruments missing one
 python -m instrument_registry --backup            # back up the local cache DB (see BACKUP.md)
@@ -25,7 +27,12 @@ python -m instrument_registry --status            # read-only: what's in a cache
 python -m instrument_registry --merge-learned <snapshot.db>   # reconcile two copies' learned rows
 ```
 
-No linter or formatter is configured — don't introduce one without asking.
+ruff and pyright are configured (added 2026-11-26, #32), following the global
+`python-strict` baseline: pyright is `standard` over `src/` with a per-file `strict`
+list that only grows. A file joins it once it passes, and none leaves it. Greek
+confusable-character rules (RUF001-003) are off on purpose. No formatter is
+configured, so don't add one, or run `ruff format`, without asking. An ignore names
+its rule and gives a reason on the same line.
 
 ## Architecture
 
@@ -172,7 +179,8 @@ Standing authorization — no need to ask before each push or merge:
 
 - Push commits directly (feature branches, not `main`) without asking first.
 - Open a PR per logical change (keep doing this — it's the review/revert boundary), then
-  **merge it yourself** once `uv run pytest` is green (run
+  **merge it yourself** once `uv run pytest`, `uv run ruff check src tests` and
+  `uv run pyright` are all green (run
   `INSTRUMENT_REGISTRY_LIVE_TESTS=1 uv run pytest` too when the change touches a
   collector). Don't wait for manual approval on the PR itself.
 - Squash-merge (`gh pr merge --squash`), and delete the branch after

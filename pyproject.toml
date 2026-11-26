@@ -15,10 +15,68 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+instrument_registry = ["py.typed"]  # PEP 561: consumers' type checkers read our annotations
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config"]
+filterwarnings = ["error"]
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.414",
     "pytest>=8.0",
+    "ruff>=0.17.6",
 ]
+
+[tool.ruff]
+target-version = "py312"          # match requires-python
+# No line-length rule: long explanatory comments are welcome.
+
+[tool.ruff.lint]
+select = [
+    "E4", "E7", "E9", "F",        # syntax, undefined names, unused imports
+    "B",                          # bugbear (incl. B905 zip strict, B023 loop closures)
+    "S",                          # security (S101: assert as a guard)
+    "DTZ",                        # naive datetimes
+    "RUF", "SIM", "PERF",         # correctness-adjacent idioms; RUF100 prunes stale noqa
+    "I", "UP",                    # import order, modern syntax (auto-fixable)
+    "T20", "ERA",                 # stray prints, commented-out code
+    "PTH",                        # pathlib
+    "FBT",                        # boolean positional arguments
+]
+# Not selected on purpose: ANN (pyright strict covers it), PL (style, not defects), E501.
+ignore = [
+    # Greek text is this package's domain: titles, aliases and test fixtures are
+    # full of Greek capitals that look like Latin ones (Α/A, Ε/E, Κ/K), on purpose.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest asserts; tests build SQL against the fixed table names they seed.
+"tests/**" = ["S101", "S608", "FBT"]
+# These modules' main() is a CLI whose printed output is the result.
+"src/instrument_registry/__main__.py" = ["T201"]
+"src/instrument_registry/backup.py" = ["T201"]
+"src/instrument_registry/merge.py" = ["T201"]
+"src/instrument_registry/status.py" = ["T201"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.12"
+# Ratcheting toward strict (#32): standard everywhere, and a file joins `strict`
+# once it passes. Strict over all of src/ measured 167 errors on 2026-11-14,
+# 144 of them Unknown-type cascades from untyped sqlite3.Row / json access.
+typeCheckingMode = "standard"
+strict = [
+    "src/instrument_registry/__init__.py",
+    "src/instrument_registry/__main__.py",
+    "src/instrument_registry/collector/__init__.py",
+    "src/instrument_registry/collector/athex.py",
+    "src/instrument_registry/db/__init__.py",
+    "src/instrument_registry/db/models.py",
+    "src/instrument_registry/db/session.py",
+]
+enableTypeIgnoreComments = false
+reportUnnecessaryTypeIgnoreComment = "error"
