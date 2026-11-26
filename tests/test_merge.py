@@ -442,3 +442,19 @@ def test_every_learned_table_is_keyed_by_isin_and_one_column():
     for key_columns, _columns in LEARNED_TABLES.values():
         assert len(key_columns) == 2
         assert key_columns[0] == "isin"
+
+
+def test_an_empty_alias_still_renders_and_apply_reports_instead_of_crashing(tmp_path, capsys):
+    # add_alias() accepts "", so a merge must be able to label that row. The
+    # label is printed after an --apply commit, so a crash there would hide
+    # the report of a merge that had already been written.
+    source, dest = tmp_path / "source.db", tmp_path / "dest.db"
+    for path in (source, dest):
+        _seed_instrument(path)
+    add_alias("GRS003003035", "", source="test", db_path=source)
+
+    assert merge_mod.main([str(source), "--db-path", str(dest), "--apply"]) == 0
+
+    out = capsys.readouterr().out
+    assert "+ GRS003003035  ''" in out
+    assert ("GRS003003035", "") in _aliases(dest)

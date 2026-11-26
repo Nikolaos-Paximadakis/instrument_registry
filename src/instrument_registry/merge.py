@@ -418,13 +418,15 @@ def merge_learned(
 
 
 def _label(row: LearnedRow) -> str:
-    label = (row.get("alias_text") or row.get("title_text") or row.get("lei")
-             or row.get("key_text"))
-    if not isinstance(label, str):
-        # Unreachable while every learned table's key column is NOT NULL;
-        # loud if a new table is added to LEARNED_TABLES without one.
-        raise ValueError(f"learned row has no key to label it by: {row!r}")
-    return label
+    # Chosen by which key column the row *has*, not by truthiness: an empty
+    # alias_text is a legal value and must still label its own row. Never
+    # raises: with --apply this runs after the commit, so a crash here would
+    # hide the report of a merge that already happened.
+    for column in ("alias_text", "title_text", "lei", "key_text"):
+        if column in row:
+            value = row[column]
+            return repr(value) if value == "" else str(value)
+    return f"(no key column: {row!r})"
 
 
 def _render(report: MergeReport) -> str:

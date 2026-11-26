@@ -39,6 +39,19 @@ def as_objects(value: object, where: str) -> list[JsonObject]:
     return [as_object(item, f"{where}[{i}]") for i, item in enumerate(items)]
 
 
+def opt_objects(obj: JsonObject, key: str, where: str) -> list[JsonObject]:
+    """An array field that may be absent or null, meaning empty. Any other
+    non-array value (false, 0, a string) is a shape error, not "empty"."""
+    value = obj.get(key)
+    return [] if value is None else as_objects(value, f"{where}.{key}")
+
+
+def opt_object(obj: JsonObject, key: str, where: str) -> JsonObject | None:
+    """An object field that may be absent or null."""
+    value = obj.get(key)
+    return None if value is None else as_object(value, f"{where}.{key}")
+
+
 def field(obj: JsonObject, key: str, where: str) -> object:
     if key not in obj:
         raise FeedShapeError(f"{where}: missing field {key!r}")
