@@ -73,3 +73,16 @@ def test_firds_bond_parses_a_record_and_rejects_a_wrong_typed_one():
     assert _firds_bond({**doc, "bnd_maturity_date": None}, "doc").maturity is None
     with pytest.raises(FeedShapeError, match=r"doc\.mic"):
         _firds_bond({**doc, "mic": 1}, "doc")
+
+
+def test_gleif_name_arrays_treat_null_as_empty_but_reject_other_falsy_values():
+    from instrument_registry.collector._json import opt_object, opt_objects
+
+    assert opt_objects({}, "otherNames", "e") == []
+    assert opt_objects({"otherNames": None}, "otherNames", "e") == []
+    for bad in (False, 0, ""):
+        with pytest.raises(FeedShapeError, match=r"e\.otherNames: expected a JSON array"):
+            opt_objects({"otherNames": bad}, "otherNames", "e")
+    assert opt_object({"legalAddress": None}, "legalAddress", "e") is None
+    with pytest.raises(FeedShapeError):
+        opt_object({"legalAddress": False}, "legalAddress", "e")
