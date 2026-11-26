@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,9 @@ from instrument_registry.collector.esma import FirdsBond
 from instrument_registry.collector.gleif import GleifEntity
 from instrument_registry.db.session import connect
 from instrument_registry.service import (
+    Entity,
     FeedShrinkError,
+    Instrument,
     add_alias,
     blacklist_lei,
     exclude_title_match,
@@ -33,6 +36,27 @@ from instrument_registry.service import (
     remove_title_exclusion,
     unblacklist_lei,
 )
+
+
+def _instrument(isin: str, db_path: Path) -> Instrument:
+    """`lookup_by_isin()` for a row the test expects to exist."""
+    instrument = lookup_by_isin(isin, db_path=db_path)
+    assert instrument is not None, f"no instrument cached for {isin}"
+    return instrument
+
+
+def _instrument_by_symbol(symbol: str, db_path: Path) -> Instrument:
+    """`lookup_by_symbol()` for a row the test expects to exist."""
+    instrument = lookup_by_symbol(symbol, db_path=db_path)
+    assert instrument is not None, f"no instrument cached for symbol {symbol}"
+    return instrument
+
+
+def _entity(lei: str, db_path: Path) -> Entity:
+    """`lookup_by_lei()` for a row the test expects to exist."""
+    entity = lookup_by_lei(lei, db_path=db_path)
+    assert entity is not None, f"no entity cached for {lei}"
+    return entity
 
 
 def _seed_instrument(db_path, *, isin, name, lei=None):
@@ -259,7 +283,7 @@ def test_refresh_athex_upserts_without_clobbering_existing_lei(tmp_path, monkeyp
     count = refresh_athex(db_path=db_path)
 
     assert count == 1
-    instrument = lookup_by_isin("GRS003003035", db_path=db_path)
+    instrument = _instrument("GRS003003035", db_path)
     assert instrument.name == "NAT. BANK OF GREECE SA"
     assert instrument.lei == "5UMCZOEYKCVFAW8ZLO05"
 
@@ -360,7 +384,7 @@ def test_refresh_athex_etfs_backfills_the_symbol_of_a_row_that_lacks_one(
 
     refresh_athex_etfs(db_path=db_path)
 
-    assert lookup_by_isin("GRF000153004", db_path=db_path).symbol == "AETF"
+    assert _instrument("GRF000153004", db_path).symbol == "AETF"
 
 
 def test_refresh_athex_etfs_does_not_clobber_an_existing_lei(tmp_path, monkeypatch):
@@ -383,7 +407,7 @@ def test_refresh_athex_etfs_does_not_clobber_an_existing_lei(tmp_path, monkeypat
 
     refresh_athex_etfs(db_path=db_path)
 
-    instrument = lookup_by_isin("GRF000153004", db_path=db_path)
+    instrument = _instrument("GRF000153004", db_path)
     assert instrument.name == "ALPHA ASSET MANAGEMENT M.F.M.C."
     assert instrument.lei == "5UMCZOEYKCVFAW8ZLO05"
 
@@ -407,9 +431,9 @@ def test_refresh_gleif_links_pending_instruments_and_stores_the_entity(tmp_path,
 
     assert result.linked == 1
     assert result.skipped_blacklisted == 0
-    instrument = lookup_by_isin("GRS003003035", db_path=db_path)
+    instrument = _instrument("GRS003003035", db_path)
     assert instrument.lei == "5UMCZOEYKCVFAW8ZLO05"
-    entity = lookup_by_lei("5UMCZOEYKCVFAW8ZLO05", db_path=db_path)
+    entity = _entity("5UMCZOEYKCVFAW8ZLO05", db_path)
     assert entity.legal_name == "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ Α.Ε."
     assert "NATIONAL BANK OF GREECE S.A." in entity.other_names
 
@@ -428,7 +452,7 @@ def test_blacklist_lei_clears_an_already_written_bad_link(tmp_path):
 
     blacklist_lei("GRK014011008", "213800OYHR1MPQ5VJL60", reason="wrong upstream", db_path=db_path)
 
-    assert lookup_by_isin("GRK014011008", db_path=db_path).lei is None
+    assert _instrument("GRK014011008", db_path).lei is None
     # The entity itself is a real one other instruments legitimately use.
     assert lookup_by_lei("213800OYHR1MPQ5VJL60", db_path=db_path) is not None
 
@@ -455,7 +479,7 @@ def test_refresh_gleif_does_not_relink_a_blacklisted_pair(tmp_path, monkeypatch)
     # The whole point of the count: this run is distinguishable from one
     # that simply found no LEI at all.
     assert result.skipped_blacklisted == 1
-    assert lookup_by_isin("GRK014011008", db_path=db_path).lei is None
+    assert _instrument("GRK014011008", db_path).lei is None
     # The bogus entity row isn't created on the blacklisted pair's behalf either.
     assert lookup_by_lei("213800OYHR1MPQ5VJL60", db_path=db_path) is None
 
@@ -482,7 +506,7 @@ def test_refresh_gleif_still_links_a_different_lei_for_a_blacklisted_isin(tmp_pa
 
     assert result.linked == 1
     assert result.skipped_blacklisted == 0
-    assert lookup_by_isin("GRK014011008", db_path=db_path).lei == "529900W18LQJJN6SJ336"
+    assert _instrument("GRK014011008", db_path).lei == "529900W18LQJJN6SJ336"
 
 
 def test_fuzzy_match_title_matches_an_exact_learned_alias(tmp_path):
@@ -557,7 +581,7 @@ def test_refresh_gleif_leaves_isin_unlinked_when_no_entity_found(tmp_path, monke
     assert result.linked == 0
     # Contrast with the blacklist case: same linked count, different reason.
     assert result.skipped_blacklisted == 0
-    assert lookup_by_isin("GRS999999999", db_path=db_path).lei is None
+    assert _instrument("GRS999999999", db_path).lei is None
 
 
 def test_exclude_title_match_removes_a_candidate_from_the_ranking(tmp_path):
@@ -649,7 +673,7 @@ def test_unblacklist_lei_deletes_the_row_without_relinking(tmp_path):
     connection.close()
     assert rows == []
     # Removing the blacklist entry doesn't itself relink — that's refresh_gleif()'s job.
-    assert lookup_by_isin("GRK014011008", db_path=db_path).lei is None
+    assert _instrument("GRK014011008", db_path).lei is None
 
 
 def test_unblacklist_lei_lets_refresh_gleif_relink_the_pair(tmp_path, monkeypatch):
@@ -673,7 +697,7 @@ def test_unblacklist_lei_lets_refresh_gleif_relink_the_pair(tmp_path, monkeypatc
 
     assert result.linked == 1
     assert result.skipped_blacklisted == 0
-    assert lookup_by_isin("GRK014011008", db_path=db_path).lei == "213800OYHR1MPQ5VJL60"
+    assert _instrument("GRK014011008", db_path).lei == "213800OYHR1MPQ5VJL60"
 
 
 def test_unblacklist_lei_is_a_noop_for_a_nonexistent_entry(tmp_path):
@@ -1001,7 +1025,7 @@ def test_refresh_athex_stamps_what_it_saw_and_keeps_what_it_did_not(tmp_path, mo
     second = _feed_column(db_path)
     assert second[TEN[0]] == first[TEN[0]]
     assert all(second[isin] > first[isin] for isin in TEN[1:])
-    assert lookup_by_isin(TEN[0], db_path=db_path).last_seen_in_feed == first[TEN[0]]
+    assert _instrument(TEN[0], db_path).last_seen_in_feed == first[TEN[0]]
 
 
 def test_refresh_athex_never_judges_an_etf(tmp_path, monkeypatch):
@@ -1084,7 +1108,7 @@ def test_refresh_athex_counts_a_delisting_once(tmp_path, monkeypatch):
 
     refresh_athex(db_path=db_path)  # 1 of 8
 
-    assert lookup_by_isin(TEN[2], db_path=db_path).last_seen_in_feed is not None
+    assert _instrument(TEN[2], db_path).last_seen_in_feed is not None
 
 
 def test_refresh_athex_measures_a_pre_tracking_cache_against_every_stored_stock(
@@ -1127,7 +1151,7 @@ def test_connect_adds_last_seen_in_feed_to_an_existing_cache_and_says_so(tmp_pat
     connect(db_path).close()
 
     assert "instruments.last_seen_in_feed" in capsys.readouterr().err
-    assert lookup_by_isin(TEN[0], db_path=db_path).last_seen_in_feed is None
+    assert _instrument(TEN[0], db_path).last_seen_in_feed is None
 
 
 def _backdate(db_path, table, isin):
@@ -1218,7 +1242,7 @@ def test_refresh_athex_bonds_resolves_the_isin_from_firds(tmp_path, monkeypatch)
     assert (bond.instrument_type, bond.symbol, bond.name) == ("bond", "AEGNB2", "AEGEAN AIRLINES S.A.")
     assert (bond.cfi_code, bond.currency, bond.source) == ("DBFUGR", "EUR", "athex+esma_firds")
     assert bond.lei is None  # refresh_gleif() owns LEI linking
-    assert lookup_by_symbol("AEGNB2", db_path=db_path).isin == "GRC0000000A1"
+    assert _instrument_by_symbol("AEGNB2", db_path).isin == "GRC0000000A1"
 
 
 def test_refresh_athex_bonds_skips_rather_than_guesses(tmp_path, monkeypatch):
@@ -1284,7 +1308,7 @@ def test_refresh_athex_bonds_does_not_clobber_an_existing_lei(tmp_path, monkeypa
 
     refresh_athex_bonds(db_path=db_path)
 
-    assert lookup_by_isin("GRC0000000A1", db_path=db_path).lei == "LEI123"
+    assert _instrument("GRC0000000A1", db_path).lei == "LEI123"
 
 
 def test_refresh_athex_bonds_refuses_an_empty_resolution_unless_allowed(tmp_path, monkeypatch):
@@ -1323,31 +1347,31 @@ def test_firds_fetch_retries_a_gateway_timeout_but_not_a_bad_query(monkeypatch):
     from instrument_registry.collector import esma
 
     monkeypatch.setattr(esma, "_RETRY_DELAY", 0)
-    request = httpx.Request("GET", esma.FIRDS_URL)
+    def client(statuses: list[int]) -> tuple[httpx.Client, list[httpx.Request]]:
+        """A real httpx.Client whose transport answers with `statuses` in
+        order, recording each request it receives."""
+        calls: list[httpx.Request] = []
 
-    class Client:
-        def __init__(self, statuses):
-            self.statuses = list(statuses)
-            self.calls = 0
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return httpx.Response(statuses.pop(0), json={"response": {"docs": [], "numFound": 0}})
 
-        def get(self, url, params):
-            self.calls += 1
-            status = self.statuses.pop(0)
-            return httpx.Response(status, request=request, json={"response": {"docs": [], "numFound": 0}})
+        return httpx.Client(transport=httpx.MockTransport(handler)), calls
 
-    flaky = Client([504, 200])
-    assert esma._get_page(flaky, {}) == {"docs": [], "numFound": 0}
-    assert flaky.calls == 2
+    flaky, flaky_calls = client([504, 200])
+    with flaky:
+        assert esma._get_page(flaky, {}) == {"docs": [], "numFound": 0}
+    assert len(flaky_calls) == 2
 
-    bad = Client([400, 200])
-    with pytest.raises(httpx.HTTPStatusError):
+    bad, bad_calls = client([400, 200])
+    with bad, pytest.raises(httpx.HTTPStatusError):
         esma._get_page(bad, {})
-    assert bad.calls == 1
+    assert len(bad_calls) == 1
 
-    down = Client([504, 504, 504])
-    with pytest.raises(httpx.HTTPStatusError):
+    down, down_calls = client([504, 504, 504])
+    with down, pytest.raises(httpx.HTTPStatusError):
         esma._get_page(down, {})
-    assert down.calls == 3
+    assert len(down_calls) == 3
 
 
 def test_refresh_athex_bonds_will_not_relabel_an_isin_cached_as_a_stock(tmp_path, monkeypatch):
@@ -1364,8 +1388,8 @@ def test_refresh_athex_bonds_will_not_relabel_an_isin_cached_as_a_stock(tmp_path
     result = refresh_athex_bonds(db_path=db_path)
 
     assert result.upserted == 1 and result.unresolved == ("AEGNB2",)
-    assert lookup_by_isin("GRC0000000A1", db_path=db_path).instrument_type == "stock"
-    assert lookup_by_isin("GRC0000000A1", db_path=db_path).source == "athex"
+    assert _instrument("GRC0000000A1", db_path).instrument_type == "stock"
+    assert _instrument("GRC0000000A1", db_path).source == "athex"
 
 
 def test_a_refused_bond_refresh_names_the_bonds_that_fell_out(tmp_path, monkeypatch):

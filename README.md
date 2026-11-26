@@ -479,7 +479,7 @@ uv run ruff check src tests
 uv run pyright
 ```
 
-pyright runs in `strict` mode over all of `src/`. pytest turns warnings
+pyright runs in `strict` mode over all of `src/` and `standard` mode over `tests/`. pytest turns warnings
 into errors. The package ships `py.typed`, so a consumer's
 type checker sees these annotations.
 
