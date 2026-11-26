@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from instrument_registry.collector._json import as_object, as_objects, opt_str, req_str
+
 LEI_RECORDS_URL = "https://api.gleif.org/api/v1/lei-records"
 
 _HEADERS = {"Accept": "application/vnd.api+json"}
@@ -38,18 +40,24 @@ def lookup_lei_by_isin(isin: str, *, timeout: float = 15.0) -> GleifEntity | Non
         response.raise_for_status()
         payload = response.json()
 
-    records = payload.get("data") or []
+    where = f"GLEIF lei-records[isin={isin}]"
+    records = as_objects(as_object(payload, where).get("data") or [], f"{where}.data")
     if not records:
         return None
 
-    entity = records[0]["attributes"]["entity"]
-    other_names = [item["name"] for item in entity.get("otherNames", [])]
-    other_names += [item["name"] for item in entity.get("transliteratedOtherNames", [])]
+    attributes = as_object(records[0].get("attributes"), f"{where}.data[0].attributes")
+    entity = as_object(attributes.get("entity"), f"{where}.entity")
+    other_names = [
+        req_str(item, "name", f"{where}.entity.{key}")
+        for key in ("otherNames", "transliteratedOtherNames")
+        for item in as_objects(entity.get(key) or [], f"{where}.entity.{key}")
+    ]
+    address = entity.get("legalAddress")
 
     return GleifEntity(
-        lei=records[0]["attributes"]["lei"],
-        legal_name=entity["legalName"]["name"],
+        lei=req_str(attributes, "lei", where),
+        legal_name=req_str(as_object(entity.get("legalName"), f"{where}.entity.legalName"), "name", where),
         other_names=other_names,
-        country=(entity.get("legalAddress") or {}).get("country"),
-        status=entity.get("status"),
+        country=opt_str(as_object(address, f"{where}.entity.legalAddress"), "country", where) if address else None,
+        status=opt_str(entity, "status", where),
     )

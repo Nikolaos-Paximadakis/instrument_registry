@@ -485,6 +485,13 @@ as their untyped `sqlite3.Row`/JSON boundaries get typed (#32). pytest
 turns warnings into errors. The package ships `py.typed`, so a consumer's
 type checker sees these annotations.
 
+The collectors read every feed field through `collector/_json.py`, which
+checks its type as it reads it. A feed that changes shape, for example a
+field that turns into a number, an object or null, fails the refresh with a
+`FeedShapeError` naming the feed, row and field, instead of storing a
+wrong-typed value in the cache. `FeedShapeError` subclasses `KeyError`, so a
+missing field raises the same kind of error as before.
+
 ## Notes
 
 - Used in-process by consumers (e.g. `pothen_eshes`); not an HTTP

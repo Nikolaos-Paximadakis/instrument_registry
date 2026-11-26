@@ -73,10 +73,14 @@ strict = [
     "src/instrument_registry/__init__.py",
     "src/instrument_registry/__main__.py",
     "src/instrument_registry/collector/__init__.py",
+    "src/instrument_registry/collector/_json.py",
     "src/instrument_registry/collector/athex.py",
+    "src/instrument_registry/collector/esma.py",
+    "src/instrument_registry/collector/gleif.py",
     "src/instrument_registry/db/__init__.py",
     "src/instrument_registry/db/models.py",
     "src/instrument_registry/db/session.py",
+    "src/instrument_registry/service.py",
 ]
 enableTypeIgnoreComments = false
 reportUnnecessaryTypeIgnoreComment = "error"

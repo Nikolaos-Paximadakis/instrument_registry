@@ -32,6 +32,15 @@ from datetime import date
 
 import httpx
 
+from instrument_registry.collector._json import (
+    JsonObject,
+    as_object,
+    as_objects,
+    opt_str,
+    req_int,
+    req_str,
+)
+
 FIRDS_URL = "https://registers.esma.europa.eu/solr/esma_registers_firds/select"
 
 #: ATHEX's two markets: the main one and EN.A. Growth.
@@ -60,7 +69,7 @@ def fetch_firds_athens_bonds(*, timeout: float = 60.0) -> list[FirdsBond]:
     """Every FIRDS debt-instrument record (CFI `D*`) on an Athens venue,
     terminated ones included (`status` says which). One record per FIRDS
     row, so the same ISIN can appear more than once."""
-    params = {
+    params: dict[str, str | int | list[str]] = {
         "q": "*",
         "fq": [f"mic:({' OR '.join(ATHENS_MICS)})", "gnr_cfi_code:D*"],
         "wt": "json",
@@ -69,48 +78,53 @@ def fetch_firds_athens_bonds(*, timeout: float = 60.0) -> list[FirdsBond]:
         # never did.
         "rows": _PAGE_SIZE,
     }
-    docs: list[dict] = []
+    docs: list[JsonObject] = []
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
         while True:
             result = _get_page(client, {**params, "start": len(docs)})
-            docs.extend(result["docs"])
-            if not result["docs"] or len(docs) >= result["numFound"]:
+            page = as_objects(result.get("docs"), "FIRDS response.docs")
+            num_found = req_int(result, "numFound", "FIRDS response")
+            docs.extend(page)
+            if not page or len(docs) >= num_found:
                 break
 
     # Unsorted pages carry no ordering guarantee, so a second page could
     # repeat or skip rows. Invisible at ~200 rows (one page), but a count
     # or id mismatch must fail loudly rather than yield a partial list.
-    if len(docs) != result["numFound"] or len({doc["id"] for doc in docs}) != len(docs):
+    ids = {req_str(doc, "id", "FIRDS doc") for doc in docs}
+    if len(docs) != num_found or len(ids) != len(docs):
         raise RuntimeError(
             f"FIRDS paging returned {len(docs)} rows "
-            f"({len({doc['id'] for doc in docs})} distinct) for numFound={result['numFound']}"
+            f"({len(ids)} distinct) for numFound={num_found}"
         )
 
-    return [
-        FirdsBond(
-            isin=doc["isin"],
-            symbol=doc["gnr_full_name"],
-            mic=doc["mic"],
-            cfi_code=doc.get("gnr_cfi_code"),
-            currency=doc.get("gnr_notional_curr_code"),
-            maturity=(
-                date.fromisoformat(doc["bnd_maturity_date"][:10])
-                if doc.get("bnd_maturity_date") else None
-            ),
-            status=doc.get("status"),
-        )
-        for doc in docs
-    ]
+    return [_firds_bond(doc, f"FIRDS doc {doc.get('id')!r}") for doc in docs]
 
 
-def _get_page(client: httpx.Client, params: dict) -> dict:
+def _firds_bond(doc: JsonObject, where: str) -> FirdsBond:
+    maturity = opt_str(doc, "bnd_maturity_date", where)
+    return FirdsBond(
+        isin=req_str(doc, "isin", where),
+        symbol=req_str(doc, "gnr_full_name", where),
+        mic=req_str(doc, "mic", where),
+        cfi_code=opt_str(doc, "gnr_cfi_code", where),
+        currency=opt_str(doc, "gnr_notional_curr_code", where),
+        maturity=date.fromisoformat(maturity[:10]) if maturity else None,
+        status=opt_str(doc, "status", where),
+    )
+
+
+def _get_page(client: httpx.Client, params: dict[str, str | int | list[str]]) -> JsonObject:
     """One page, retried on a 5xx or a transport failure. A 4xx is a bad
     query, not a flaky gateway, and is raised at once."""
     for attempt in range(1, _ATTEMPTS + 1):
         try:
             response = client.get(FIRDS_URL, params=params)
             response.raise_for_status()
-            return response.json()["response"]
+            return as_object(
+                as_object(response.json(), "FIRDS response body").get("response"),
+                "FIRDS response",
+            )
         except (httpx.TransportError, httpx.HTTPStatusError) as error:
             retryable = isinstance(error, httpx.TransportError) or error.response.status_code >= 500
             if not retryable or attempt == _ATTEMPTS:
