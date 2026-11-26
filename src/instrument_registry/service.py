@@ -933,7 +933,7 @@ def fuzzy_match_title_scored(
     return scored
 
 
-def _row_to_instrument(row) -> Instrument:
+def _row_to_instrument(row: sqlite3.Row) -> Instrument:
     return Instrument(
         isin=row["isin"],
         name=row["name"],
@@ -948,7 +948,7 @@ def _row_to_instrument(row) -> Instrument:
     )
 
 
-def _row_to_entity(row) -> Entity:
+def _row_to_entity(row: sqlite3.Row) -> Entity:
     return Entity(
         lei=row["lei"],
         legal_name=row["legal_name"],

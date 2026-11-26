@@ -31,6 +31,14 @@ from datetime import date
 
 import httpx
 
+from instrument_registry.collector._json import (
+    JsonObject,
+    as_object,
+    as_objects,
+    opt_str,
+    req_str,
+)
+
 STOCKS_URL = "https://athens.euronext.com/sites/default/files/json_data_files/stocks_en.json"
 ETFS_URL = "https://athens.euronext.com/sites/default/files/json_data_files/etfs_en.json"
 BONDS_URL = "https://athens.euronext.com/sites/default/files/json_data_files/bonds_en.json"
@@ -64,13 +72,13 @@ def fetch_athex_stocks(*, timeout: float = 30.0) -> list[AthexStock]:
 
     return [
         AthexStock(
-            isin=row["ISIN"],
-            symbol=row["Symbol"],
-            issuer=row["Issuer"],
-            issuer_full_name=row.get("_issuerFullName", row["Issuer"]),
-            market=row.get("Market", ""),
+            isin=req_str(row, "ISIN", where),
+            symbol=req_str(row, "Symbol", where),
+            issuer=req_str(row, "Issuer", where),
+            issuer_full_name=_issuer_full_name(row, where),
+            market=opt_str(row, "Market", where) or "",
         )
-        for row in payload["data"]
+        for where, row in _rows(payload, "stocks_en.json")
     ]
 
 
@@ -97,12 +105,12 @@ def fetch_athex_etfs(*, timeout: float = 30.0) -> list[AthexEtf]:
 
     return [
         AthexEtf(
-            isin=row["ISIN"],
-            symbol=row["Symbol"],
-            issuer=row["Issuer"],
-            issuer_full_name=row.get("_issuerFullName", row["Issuer"]),
+            isin=req_str(row, "ISIN", where),
+            symbol=req_str(row, "Symbol", where),
+            issuer=req_str(row, "Issuer", where),
+            issuer_full_name=_issuer_full_name(row, where),
         )
-        for row in payload["data"]
+        for where, row in _rows(payload, "etfs_en.json")
     ]
 
 
@@ -131,10 +139,25 @@ def fetch_athex_bonds(*, timeout: float = 30.0) -> list[AthexBond]:
 
     return [
         AthexBond(
-            symbol=row["Symbol"],
-            issuer=row["Issuer"],
-            issuer_full_name=row.get("_issuerFullName", row["Issuer"]),
-            maturity=date.fromisoformat(row["Maturity"]["date"][:10]),
+            symbol=req_str(row, "Symbol", where),
+            issuer=req_str(row, "Issuer", where),
+            issuer_full_name=_issuer_full_name(row, where),
+            maturity=date.fromisoformat(
+                req_str(as_object(row.get("Maturity"), f"{where}.Maturity"), "date", where)[:10]
+            ),
         )
-        for row in payload["data"]
+        for where, row in _rows(payload, "bonds_en.json")
     ]
+
+
+def _rows(payload: object, feed: str) -> list[tuple[str, JsonObject]]:
+    """The feed's `data` rows, each paired with a location for error messages."""
+    rows = as_objects(as_object(payload, feed).get("data"), f"{feed}.data")
+    return [(f"{feed}.data[{i}]", row) for i, row in enumerate(rows)]
+
+
+def _issuer_full_name(row: JsonObject, where: str) -> str:
+    # Falls back to `Issuer` when the field is absent, as before, and now
+    # also when it is null rather than storing None in a `str` field.
+    full_name = opt_str(row, "_issuerFullName", where)
+    return full_name if full_name is not None else req_str(row, "Issuer", where)
