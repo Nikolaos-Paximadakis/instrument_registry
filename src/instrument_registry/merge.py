@@ -152,6 +152,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypedDict
 
 from instrument_registry.db.session import DEFAULT_DB_PATH, connect
 
@@ -177,6 +178,67 @@ NEEDS_INSTRUMENT = ("instrument_aliases", "title_isin_exclusions")
 
 TOMBSTONE_COLUMNS = ("table_name", "isin", "key_text", "deleted_at", "reason", "row_json")
 
+#: One value as SQLite returns it.
+SqlValue = str | int | float | bytes | None
+
+#: A learned row copied out of a cache, column name -> value. Kept as a
+#: plain dict, not a TypedDict, because its columns depend on the table.
+LearnedRow = dict[str, SqlValue]
+
+
+class Tombstone(TypedDict):
+    """A `learned_tombstones` row. Field order is TOMBSTONE_COLUMNS'."""
+    table_name: str
+    isin: str
+    key_text: str
+    deleted_at: str
+    reason: str | None
+    row_json: str | None
+
+
+class TableResult(TypedDict):
+    added: int
+    already_present: int
+    skipped_unknown_isin: int
+    blocked_by_tombstone: int
+    deleted: int
+    tombstones_added: int
+    tombstones_superseded: int
+    added_rows: list[LearnedRow]
+    skipped_rows: list[LearnedRow]
+    blocked_rows: list[LearnedRow]
+    deleted_rows: list[LearnedRow]
+    tombstone_rows: list[Tombstone]
+    superseded_tombstones: list[Tombstone]
+
+
+class MergeReport(TypedDict):
+    source: str
+    destination: str
+    applied: bool
+    tables: dict[str, TableResult]
+
+
+def _row_dict(row: sqlite3.Row) -> LearnedRow:
+    return {key: row[key] for key in row.keys()}  # noqa: SIM118 - iterating a sqlite3.Row yields values, not keys
+
+
+def _tombstone(row: sqlite3.Row) -> Tombstone:
+    return {
+        "table_name": row["table_name"],
+        "isin": row["isin"],
+        "key_text": row["key_text"],
+        "deleted_at": row["deleted_at"],
+        "reason": row["reason"],
+        "row_json": row["row_json"],
+    }
+
+
+def _tombstone_values(stone: Tombstone) -> tuple[str | None, ...]:
+    """The tombstone's values in TOMBSTONE_COLUMNS order, for an INSERT."""
+    return (stone["table_name"], stone["isin"], stone["key_text"],
+            stone["deleted_at"], stone["reason"], stone["row_json"])
+
 
 def _when(stamp: str) -> datetime:
     # Parsed rather than compared as strings: isoformat() drops the
@@ -199,7 +261,7 @@ def merge_learned(
     db_path: Path | str | None = None,
     *,
     apply: bool = False,
-) -> dict:
+) -> MergeReport:
     """Merges the three learned tables, and the tombstones recording
     deletions from them, from `source` into the cache at `db_path`.
     Reports without writing unless `apply`."""
@@ -224,21 +286,21 @@ def merge_learned(
                 "instrument_registry cache?")
         # A snapshot taken before tombstones existed simply has none.
         source_tombstones = [
-            dict(row) for row in src.execute(
+            _tombstone(row) for row in src.execute(
                 f"SELECT {', '.join(TOMBSTONE_COLUMNS)} FROM learned_tombstones")  # noqa: S608 - identifiers are module constants; values are bound
         ] if "learned_tombstones" in present else []
 
         dest = connect(db_path)
         try:
-            known_isins = {
+            known_isins: set[str] = {
                 row[0] for row in dest.execute("SELECT isin FROM instruments")
             }
-            dest_tombstones = {
-                (row["table_name"], row["isin"], row["key_text"]): dict(row)
+            dest_tombstones: dict[tuple[str, str, str], Tombstone] = {
+                (row["table_name"], row["isin"], row["key_text"]): _tombstone(row)
                 for row in dest.execute(
                     f"SELECT {', '.join(TOMBSTONE_COLUMNS)} FROM learned_tombstones")  # noqa: S608 - identifiers are module constants; values are bound
             }
-            report: dict = {
+            report: MergeReport = {
                 "source": str(source),
                 "destination": str(Path(db_path) if db_path else DEFAULT_DB_PATH),
                 "applied": apply,
@@ -247,14 +309,18 @@ def merge_learned(
 
             for table, (key_columns, columns) in LEARNED_TABLES.items():
                 key_column = key_columns[1]
-                existing = {
+                existing: dict[tuple[str, str], str] = {
                     (row["isin"], row[key_column]): row["created_at"]
                     for row in dest.execute(
                         f"SELECT isin, {key_column}, created_at FROM {table}")  # noqa: S608 - identifiers are module constants; values are bound
                 }
                 already_present = len(existing)
-                added, skipped, blocked = [], [], []
-                deleted, tombstoned, superseded = [], [], []
+                added: list[LearnedRow] = []
+                skipped: list[LearnedRow] = []
+                blocked: list[LearnedRow] = []
+                deleted: list[LearnedRow] = []
+                tombstoned: list[Tombstone] = []
+                superseded: list[Tombstone] = []
 
                 # Source tombstones first: one that is newer than the
                 # destination's live row deletes it, so the cleanup reaches
@@ -263,7 +329,7 @@ def merge_learned(
                     if stone["table_name"] != table:
                         continue
                     key = (stone["isin"], stone["key_text"])
-                    full_key = (table, *key)
+                    full_key = (table, stone["isin"], stone["key_text"])
                     created_at = existing.get(key)
                     if created_at is not None:
                         if not _tombstone_wins(stone["deleted_at"], created_at):
@@ -277,10 +343,11 @@ def merge_learned(
                                 f"DELETE FROM {table} WHERE isin = ? AND {key_column} = ?",  # noqa: S608 - identifiers are module constants; values are bound
                                 key)
                         del existing[key]
-                        deleted.append(dict(row))
+                        deleted.append(_row_dict(row))
                         # Keep the row being deleted, so this is undoable.
-                        stone = {**stone, "row_json": stone["row_json"] or json.dumps(
-                            dict(row), ensure_ascii=False)}
+                        stone = stone.copy()
+                        stone["row_json"] = stone["row_json"] or json.dumps(
+                            _row_dict(row), ensure_ascii=False)
                     have = dest_tombstones.get(full_key)
                     if have is not None and _when(have["deleted_at"]) >= _when(stone["deleted_at"]):
                         continue
@@ -291,23 +358,24 @@ def merge_learned(
                             "ON CONFLICT(table_name, isin, key_text) DO UPDATE SET "
                             "deleted_at = excluded.deleted_at, reason = excluded.reason, "
                             "row_json = COALESCE(excluded.row_json, row_json)",
-                            tuple(stone[c] for c in TOMBSTONE_COLUMNS),
+                            _tombstone_values(stone),
                         )
                     dest_tombstones[full_key] = stone
                     tombstoned.append(stone)
 
                 for row in src.execute(f"SELECT {', '.join(columns)} FROM {table}"):  # noqa: S608 - identifiers are module constants; values are bound
-                    key = tuple(row[c] for c in key_columns)
+                    # Every learned table's natural key is (isin, key_column).
+                    key: tuple[str, str] = (row["isin"], row[key_column])
                     if key in existing:
                         continue
                     stone = dest_tombstones.get((table, *key))
                     if stone is not None and _tombstone_wins(
                             stone["deleted_at"], row["created_at"]):
-                        blocked.append({**dict(row), "deleted_at": stone["deleted_at"],
+                        blocked.append({**_row_dict(row), "deleted_at": stone["deleted_at"],
                                         "deletion_reason": stone["reason"]})
                         continue
                     if table in NEEDS_INSTRUMENT and row["isin"] not in known_isins:
-                        skipped.append(dict(row))
+                        skipped.append(_row_dict(row))
                         continue
                     if apply:
                         dest.execute(
@@ -322,7 +390,7 @@ def merge_learned(
                             dest.execute(
                                 "DELETE FROM learned_tombstones WHERE table_name = ? "
                                 "AND isin = ? AND key_text = ?", (table, *key))
-                    added.append(dict(row))
+                    added.append(_row_dict(row))
 
                 report["tables"][table] = {
                     "added": len(added),
@@ -349,17 +417,17 @@ def merge_learned(
         src.close()
 
 
-def _label(row: dict) -> str:
+def _label(row: LearnedRow) -> str:
     label = (row.get("alias_text") or row.get("title_text") or row.get("lei")
              or row.get("key_text"))
-    if label is None:
+    if not isinstance(label, str):
         # Unreachable while every learned table's key column is NOT NULL;
         # loud if a new table is added to LEARNED_TABLES without one.
         raise ValueError(f"learned row has no key to label it by: {row!r}")
     return label
 
 
-def _render(report: dict) -> str:
+def _render(report: MergeReport) -> str:
     lines = [
         f"source:      {report['source']}",
         f"destination: {report['destination']}",

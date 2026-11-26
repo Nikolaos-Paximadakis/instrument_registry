@@ -38,11 +38,13 @@ import argparse
 import json
 import sqlite3
 from pathlib import Path
+from typing import Literal, NotRequired, TypedDict
 
 from instrument_registry.backup import BACKUP_ROOT_ENV
 from instrument_registry.backup import DEFAULT_ROOT as DEFAULT_BACKUP_ROOT
 from instrument_registry.backup import default_root as default_backup_root
 from instrument_registry.db.session import DEFAULT_DB_PATH
+
 
 #: Every refresh that owns rows in `instruments`, keyed by the
 #: `instrument_type` it writes. That type is what makes "has this refresh
@@ -55,7 +57,13 @@ from instrument_registry.db.session import DEFAULT_DB_PATH
 #: A row of its own type with one of them NULL means the row predates a
 #: change to that refresh and re-running it is what fixes the row — which
 #: is precisely the `symbol` bug, made visible instead of silent.
-REFRESHES = (
+class Refresh(TypedDict):
+    command: str
+    instrument_type: str
+    backfills: tuple[str, ...]
+
+
+REFRESHES: tuple[Refresh, ...] = (
     {
         "command": "--refresh-athex",
         "instrument_type": "stock",
@@ -86,6 +94,58 @@ LEARNED_TABLES = (
 UPSTREAM_TABLES = ("instruments", "entities")
 
 
+class RefreshEntry(TypedDict):
+    command: str
+    instrument_type: str
+    rows: int
+    last_updated: str | None
+    missing: dict[str, int]
+    last_feed: str | None
+    not_in_latest_feed: int | None
+    state: Literal["never run here", "needs re-run", "ok"]
+
+
+class GleifCounts(TypedDict):
+    linked: int
+    unlinked: int
+    blacklisted_pairs: int
+
+
+class ShrinkCounts(TypedDict):
+    backup: int
+    now: int
+
+
+class BackupInfo(TypedDict):
+    created_utc: str | None
+    row_counts: dict[str, int]
+    shrunk: NotRequired[dict[str, ShrinkCounts]]
+
+
+class MissingReport(TypedDict):
+    """`status()` on a path with no DB: just the problem."""
+    db_path: str
+    exists: Literal[False]
+    problems: list[str]
+
+
+class Report(TypedDict):
+    """`status()` on an existing DB. Key order is the `--json` output's."""
+    db_path: str
+    exists: Literal[True]
+    problems: list[str]
+    bytes: int
+    tables: dict[str, int]
+    refreshes: list[RefreshEntry]
+    unrecognised_types: list[str]
+    gleif: GleifCounts
+    backup: BackupInfo | None
+    backup_root: str
+
+
+StatusReport = MissingReport | Report
+
+
 def _count(connection: sqlite3.Connection, table: str) -> int:
     # This connection is read-only, so a cache no newer code has opened yet
     # can lack a table added since; it has no rows in it either way.
@@ -96,7 +156,7 @@ def _count(connection: sqlite3.Connection, table: str) -> int:
     return connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608 - identifiers are module constants; values are bound
 
 
-def _latest_backup(backup_root: Path) -> dict | None:
+def _latest_backup(backup_root: Path) -> BackupInfo | None:
     """The row counts recorded by the most recent `--backup`, if there is
     one. `backup.py` already writes a per-table `row_counts` into each
     snapshot's MANIFEST.json, so comparing against it costs one file read
@@ -119,7 +179,7 @@ def status(
     db_path: str | Path | None = None,
     *,
     backup_root: Path | None = None,
-) -> dict:
+) -> StatusReport:
     """Inspects `db_path` read-only and returns a report dict. Never
     creates the DB: unlike every other entry point here, this one opens
     the file in SQLite read-only mode rather than going through
@@ -132,22 +192,20 @@ def status(
     writes to in this environment."""
     backup_root = Path(backup_root) if backup_root is not None else default_backup_root()
     path = Path(db_path) if db_path is not None else Path(DEFAULT_DB_PATH)
-    report: dict = {"db_path": str(path), "exists": path.exists(), "problems": []}
+    if not path.exists():
+        return {"db_path": str(path), "exists": False, "problems": [f"no cache DB at {path}"]}
 
-    if not report["exists"]:
-        report["problems"].append(f"no cache DB at {path}")
-        return report
-
-    report["bytes"] = path.stat().st_size
+    problems: list[str] = []
+    size = path.stat().st_size
+    refreshes: list[RefreshEntry] = []
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     try:
-        report["tables"] = {
+        tables = {
             table: _count(connection, table)
             for table in UPSTREAM_TABLES + LEARNED_TABLES
         }
 
-        report["refreshes"] = []
         has_feed_column = "last_seen_in_feed" in {
             r[1] for r in connection.execute("PRAGMA table_info(instruments)")
         }
@@ -180,58 +238,61 @@ def status(
                 "AND (last_seen_in_feed IS NULL OR last_seen_in_feed < ?)",
                 (refresh["instrument_type"], latest_feed),
             ).fetchone()[0] if latest_feed is not None else None
-            entry = {
-                "command": refresh["command"],
-                "instrument_type": refresh["instrument_type"],
-                "rows": row["rows"],
-                "last_updated": row["last_updated"],
-                "missing": {c: n for c, n in missing.items() if n},
-                "last_feed": latest_feed,
-                "not_in_latest_feed": not_in_latest_feed,
-            }
-            untracked = bool(entry["rows"]) and latest_feed is None
-            if not entry["rows"]:
-                entry["state"] = "never run here"
-                report["problems"].append(
+            rows: int = row["rows"]
+            missing_now = {c: n for c, n in missing.items() if n}
+            untracked = bool(rows) and latest_feed is None
+            state: Literal["never run here", "needs re-run", "ok"]
+            if not rows:
+                state = "never run here"
+                problems.append(
                     f"{refresh['command']} has never been run against this cache "
                     f"(no '{refresh['instrument_type']}' rows)"
                 )
-            elif entry["missing"] or untracked:
-                entry["state"] = "needs re-run"
-                for column, count in entry["missing"].items():
-                    report["problems"].append(
+            elif missing_now or untracked:
+                state = "needs re-run"
+                for column, count in missing_now.items():
+                    problems.append(
                         f"{count} '{refresh['instrument_type']}' row(s) have a NULL "
                         f"{column}; re-run {refresh['command']} to backfill"
                     )
                 if untracked:
-                    report["problems"].append(
+                    problems.append(
                         f"feed membership has never been recorded for "
                         f"'{refresh['instrument_type']}' rows; re-run "
                         f"{refresh['command']} so a later delisting keeps its date"
                     )
             else:
-                entry["state"] = "ok"
-            report["refreshes"].append(entry)
+                state = "ok"
+            refreshes.append({
+                "command": refresh["command"],
+                "instrument_type": refresh["instrument_type"],
+                "rows": rows,
+                "last_updated": row["last_updated"],
+                "missing": missing_now,
+                "last_feed": latest_feed,
+                "not_in_latest_feed": not_in_latest_feed,
+                "state": state,
+            })
 
         # An instrument_type present in the data but not in REFRESHES means
         # this module is out of date with the package — worth saying out
         # loud, since the whole point is to be exhaustive about coverage.
         known = {r["instrument_type"] for r in REFRESHES}
-        report["unrecognised_types"] = sorted(
+        unrecognised_types = sorted(
             str(r[0]) for r in connection.execute(
                 "SELECT DISTINCT instrument_type FROM instruments")
             if r[0] not in known
         )
-        for unknown in report["unrecognised_types"]:
-            report["problems"].append(
-                f"instruments hold type '{unknown}', which no known refresh owns "
-                "— status.py's REFRESHES is out of date"
-            )
+        problems.extend(
+            f"instruments hold type '{unknown}', which no known refresh owns "
+            "— status.py's REFRESHES is out of date"
+            for unknown in unrecognised_types
+        )
 
         # A NULL lei is NOT a problem: plenty of smaller Greek issuers have
         # no registered LEI at all, and refresh_gleif() re-queries those
         # every run by design. Reported as information, never as an error.
-        report["gleif"] = {
+        gleif: GleifCounts = {
             "linked": connection.execute(
                 "SELECT COUNT(*) FROM instruments WHERE lei IS NOT NULL").fetchone()[0],
             "unlinked": connection.execute(
@@ -242,14 +303,12 @@ def status(
         connection.close()
 
     backup = _latest_backup(backup_root)
-    report["backup"] = backup
-    report["backup_root"] = str(backup_root)
     if backup is None:
         # Still a problem even where the root doesn't exist at all: "never
         # backed up" is a real signal on a machine that should have been.
         # An environment that keeps backups somewhere else says so with
         # the env var, rather than this check guessing from absence.
-        report["problems"].append(
+        problems.append(
             f"no backup found under {backup_root} — run "
             "`python -m instrument_registry --backup`, or set "
             f"{BACKUP_ROOT_ENV} if this environment keeps its backups elsewhere"
@@ -260,25 +319,36 @@ def status(
         # any external source, so it's the one comparison worth alarming on.
         # This check exists because four learned aliases really did go
         # missing between one backup and the next, and nothing noticed.
-        shrunk = {}
+        shrunk: dict[str, ShrinkCounts] = {}
         for table in LEARNED_TABLES:
             then = backup["row_counts"].get(table)
-            now = report["tables"][table]
+            now = tables[table]
             if then is not None and now < then:
                 shrunk[table] = {"backup": then, "now": now}
-                report["problems"].append(
+                problems.append(
                     f"{table} has {now} row(s), down from {then} at the last backup "
                     f"({backup['created_utc']}) — learned data is not recoverable "
                     "from any external source"
                 )
-        backup["shrunk"] = shrunk  # the same dict as report["backup"]
+        backup["shrunk"] = shrunk
 
-    return report
+    return {
+        "db_path": str(path),
+        "exists": True,
+        "problems": problems,
+        "bytes": size,
+        "tables": tables,
+        "refreshes": refreshes,
+        "unrecognised_types": unrecognised_types,
+        "gleif": gleif,
+        "backup": backup,
+        "backup_root": str(backup_root),
+    }
 
 
-def _format(report: dict) -> str:
+def _format(report: StatusReport) -> str:
     lines = [f"cache: {report['db_path']}"]
-    if not report["exists"]:
+    if report["exists"] is False:  # `is False`, not `not`: pyright narrows the union on it
         lines.append("  MISSING — no database at that path")
         return "\n".join(lines)
 
@@ -313,7 +383,7 @@ def _format(report: dict) -> str:
     )
 
     lines.append("")
-    backup = report.get("backup")
+    backup = report["backup"]
     if backup is None:
         lines.append(f"backup: none found under {report['backup_root']}")
     else:

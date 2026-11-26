@@ -479,10 +479,8 @@ uv run ruff check src tests
 uv run pyright
 ```
 
-pyright runs in `standard` mode over `src/`, with the files listed under
-`strict` in `pyproject.toml` held to `strict`. The rest move into that list
-as their untyped `sqlite3.Row`/JSON boundaries get typed (#32). pytest
-turns warnings into errors. The package ships `py.typed`, so a consumer's
+pyright runs in `strict` mode over all of `src/`. pytest turns warnings
+into errors. The package ships `py.typed`, so a consumer's
 type checker sees these annotations.
 
 The collectors read every feed field through `collector/_json.py`, which

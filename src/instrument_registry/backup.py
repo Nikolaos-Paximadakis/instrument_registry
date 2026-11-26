@@ -38,11 +38,31 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypedDict
 
 from instrument_registry.db.session import DEFAULT_DB_PATH
 from instrument_registry.service import export_snapshot
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class SnapshotEntry(TypedDict):
+    """One backed-up file in a snapshot's MANIFEST.json."""
+    bytes: int
+    sha256: str
+    integrity: str
+    row_counts: dict[str, int]
+
+
+class Manifest(TypedDict):
+    """A snapshot's MANIFEST.json, as written and as `backup()` returns it."""
+    created_utc: str
+    repo_root: str
+    git_head: str | None
+    source: str
+    snapshot: dict[str, SnapshotEntry]
+    skipped: list[str]
+    pruned: list[str]
 
 #: Default staging area, matching the convention already used by
 #: pothen_eshes/euronext_athens_delisted_issuers on this machine. Lives on
@@ -106,7 +126,7 @@ def _git_head(repo_root: Path) -> str | None:
     return completed.stdout.strip() or None if completed.returncode == 0 else None
 
 
-def _row_counts(db_path: Path) -> dict:
+def _row_counts(db_path: Path) -> dict[str, int]:
     connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         return {
@@ -172,7 +192,7 @@ def backup(
     db_path: Path | str | None = None,
     repo_root: Path = REPO_ROOT,
     keep: int = DEFAULT_KEEP,
-) -> dict:
+) -> Manifest:
     """Runs one backup. Returns the manifest dict that was written. `root`
     defaults to `default_root()`."""
     root = Path(root) if root is not None else default_root()
@@ -185,13 +205,14 @@ def backup(
     snapshot_dir = root / "snapshots" / stamp
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest: dict = {
+    manifest: Manifest = {
         "created_utc": stamp,
         "repo_root": str(repo_root),
         "git_head": _git_head(repo_root),
         "source": str(source),
         "snapshot": {},
         "skipped": [],
+        "pruned": [],  # filled in after the snapshot is written; key order unchanged
     }
 
     if not source.exists():
@@ -206,7 +227,7 @@ def backup(
         check = sqlite3.connect(dest)
         try:
             try:
-                result = check.execute("PRAGMA integrity_check").fetchone()[0]
+                result: str = check.execute("PRAGMA integrity_check").fetchone()[0]
             except sqlite3.DatabaseError as e:
                 # A genuinely corrupt/truncated file fails to even open as a
                 # database — same underlying failure as a bad integrity_check
