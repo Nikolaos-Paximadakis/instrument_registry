@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 from instrument_registry import backup as backup_mod
 from instrument_registry import status as status_mod
@@ -20,9 +21,10 @@ from instrument_registry.service import add_alias
 
 
 def _seed(
-    db_path, *, instrument_type="stock", isin="GRS003003035", symbol="ETE",
-    last_seen_in_feed="2026-01-01T00:00:00+00:00",
-):
+    db_path: Path, *, instrument_type: str = "stock", isin: str = "GRS003003035",
+    symbol: str | None = "ETE",
+    last_seen_in_feed: str | None = "2026-01-01T00:00:00+00:00",
+) -> None:
     connection = connect(db_path)
     connection.execute(
         "INSERT INTO instruments (isin, name, other_names, instrument_type, source, "
@@ -32,6 +34,13 @@ def _seed(
     )
     connection.commit()
     connection.close()
+
+
+def _status(db_path: Path, backup_root: Path | None = None) -> status_mod.Report:
+    """`status()` on a DB the test has seeded, narrowed to the full report."""
+    report = status_mod.status(db_path=db_path, backup_root=backup_root)
+    assert report["exists"] is True
+    return report
 
 
 def _seed_bond(db_path, *, isin="GRC807121CB5", symbol="ROENB1"):
@@ -51,7 +60,7 @@ def test_status_reports_a_refresh_that_has_never_run_here(tmp_path):
     db_path = tmp_path / "registry.db"
     _seed(db_path)
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "no-backups")
+    report = _status(db_path=db_path, backup_root=tmp_path / "no-backups")
 
     etfs = next(r for r in report["refreshes"] if r["instrument_type"] == "etf")
     assert etfs["state"] == "never run here"
@@ -68,7 +77,7 @@ def test_status_reports_a_column_the_refresh_owns_sitting_null(tmp_path):
     db_path = tmp_path / "registry.db"
     _seed(db_path, symbol=None)
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "no-backups")
+    report = _status(db_path=db_path, backup_root=tmp_path / "no-backups")
 
     stocks = next(r for r in report["refreshes"] if r["instrument_type"] == "stock")
     assert stocks["state"] == "needs re-run"
@@ -83,7 +92,7 @@ def test_status_is_clean_when_every_refresh_has_run_completely(tmp_path):
     _seed_bond(db_path)
     backup_mod.backup(root=tmp_path / "dest", db_path=db_path, keep=30)
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "dest")
+    report = _status(db_path=db_path, backup_root=tmp_path / "dest")
 
     assert report["problems"] == []
     assert all(r["state"] == "ok" for r in report["refreshes"])
@@ -106,9 +115,12 @@ def test_status_flags_a_learned_table_that_shrank_since_the_last_backup(tmp_path
     connection.commit()
     connection.close()
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "dest")
+    report = _status(db_path=db_path, backup_root=tmp_path / "dest")
 
-    assert report["backup"]["shrunk"] == {
+    backup = report["backup"]
+    assert backup is not None
+    assert "shrunk" in backup
+    assert backup["shrunk"] == {
         "instrument_aliases": {"backup": 2, "now": 1}
     }
     assert any("down from 2 at the last backup" in p for p in report["problems"])
@@ -129,9 +141,12 @@ def test_status_does_not_flag_upstream_tables_that_shrank(tmp_path):
     connection.commit()
     connection.close()
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "dest")
+    report = _status(db_path=db_path, backup_root=tmp_path / "dest")
 
-    assert report["backup"]["shrunk"] == {}
+    backup = report["backup"]
+    assert backup is not None
+    assert "shrunk" in backup
+    assert backup["shrunk"] == {}
     assert report["problems"] == []
 
 
@@ -141,7 +156,7 @@ def test_status_reports_a_missing_backup_as_a_problem(tmp_path):
     _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
     _seed_bond(db_path)
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "nowhere")
+    report = _status(db_path=db_path, backup_root=tmp_path / "nowhere")
 
     assert report["backup"] is None
     assert any("no backup found" in p for p in report["problems"])
@@ -170,7 +185,7 @@ def test_status_flags_an_instrument_type_no_known_refresh_owns(tmp_path):
     _seed_bond(db_path)
     _seed(db_path, instrument_type="warrant", isin="GRW000000001", symbol="WRT")
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "nowhere")
+    report = _status(db_path=db_path, backup_root=tmp_path / "nowhere")
 
     assert report["unrecognised_types"] == ["warrant"]
     assert any("no known refresh owns" in p for p in report["problems"])
@@ -212,7 +227,7 @@ def test_status_reports_feed_membership_that_was_never_recorded(tmp_path):
     _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
     _seed_bond(db_path)
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "nowhere")
+    report = _status(db_path=db_path, backup_root=tmp_path / "nowhere")
 
     stocks = next(r for r in report["refreshes"] if r["instrument_type"] == "stock")
     assert stocks["state"] == "needs re-run"
@@ -237,7 +252,7 @@ def test_status_counts_rows_no_longer_in_the_feed_without_calling_it_a_problem(t
     _seed_bond(db_path)
     backup_mod.backup(root=tmp_path / "dest", db_path=db_path, keep=30)
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "dest")
+    report = _status(db_path=db_path, backup_root=tmp_path / "dest")
 
     stocks = next(r for r in report["refreshes"] if r["instrument_type"] == "stock")
     assert stocks["not_in_latest_feed"] == 2
@@ -258,7 +273,7 @@ def test_status_reads_a_cache_that_predates_the_column_without_migrating_it(tmp_
     raw.commit()
     raw.close()
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "nowhere")
+    report = _status(db_path=db_path, backup_root=tmp_path / "nowhere")
 
     assert all(r["state"] == "needs re-run" for r in report["refreshes"])
     raw = sqlite3.connect(db_path)
@@ -278,7 +293,7 @@ def test_backup_root_env_var_points_backup_and_status_at_the_same_place(tmp_path
     monkeypatch.setenv("INSTRUMENT_REGISTRY_BACKUP_ROOT", str(tmp_path / "volume-backups"))
 
     backup_mod.backup(db_path=db_path, keep=30)
-    report = status_mod.status(db_path=db_path)
+    report = _status(db_path=db_path)
 
     assert (tmp_path / "volume-backups" / "snapshots" / "latest" / "MANIFEST.json").exists()
     assert report["backup_root"] == str(tmp_path / "volume-backups")
@@ -294,7 +309,7 @@ def test_backup_root_env_var_still_reports_a_missing_backup_there(tmp_path, monk
     _seed_bond(db_path)
     monkeypatch.setenv("INSTRUMENT_REGISTRY_BACKUP_ROOT", str(tmp_path / "empty"))
 
-    report = status_mod.status(db_path=db_path)
+    report = _status(db_path=db_path)
 
     assert report["backup"] is None
     assert any(f"no backup found under {tmp_path / 'empty'}" in p for p in report["problems"])
@@ -308,7 +323,7 @@ def test_an_explicit_backup_root_beats_the_env_var(tmp_path, monkeypatch):
     backup_mod.backup(root=tmp_path / "dest", db_path=db_path, keep=30)
     monkeypatch.setenv("INSTRUMENT_REGISTRY_BACKUP_ROOT", str(tmp_path / "empty"))
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "dest")
+    report = _status(db_path=db_path, backup_root=tmp_path / "dest")
 
     assert report["backup"] is not None
     assert report["problems"] == []
@@ -325,7 +340,7 @@ def test_status_reads_a_cache_that_predates_the_tombstone_table(tmp_path):
     raw.commit()
     raw.close()
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "nowhere")
+    report = _status(db_path=db_path, backup_root=tmp_path / "nowhere")
 
     assert report["tables"]["learned_tombstones"] == 0
 
@@ -336,7 +351,7 @@ def test_status_reports_a_bond_missing_the_columns_the_bond_refresh_owns(tmp_pat
     _seed(db_path, instrument_type="etf", isin="GRF000153004", symbol="AETF")
     _seed(db_path, instrument_type="bond", isin="GRC807121CB5", symbol="ROENB1")
 
-    report = status_mod.status(db_path=db_path, backup_root=tmp_path / "no-backups")
+    report = _status(db_path=db_path, backup_root=tmp_path / "no-backups")
 
     bonds = next(r for r in report["refreshes"] if r["instrument_type"] == "bond")
     assert bonds["state"] == "needs re-run"

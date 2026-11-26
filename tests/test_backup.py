@@ -117,8 +117,8 @@ def test_old_snapshots_are_pruned_and_latest_points_at_newest(tmp_path, monkeypa
     stamps = iter([f"2026-08-0{i}T00-00-00Z" for i in range(1, 6)])
     monkeypatch.setattr(backup_mod, "_utc_stamp", lambda: next(stamps))
 
-    for _ in range(5):
-        manifest = backup_mod.backup(root=root, db_path=db_path, keep=3)
+    manifests = [backup_mod.backup(root=root, db_path=db_path, keep=3) for _ in range(5)]
+    manifest = manifests[-1]
 
     kept = sorted(p.name for p in (root / "snapshots").iterdir()
                   if p.is_dir() and not p.is_symlink())
