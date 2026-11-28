@@ -60,7 +60,8 @@ The six tables split into two categories, and conflating them causes real data l
 
 `refresh_athex()`/`refresh_gleif()` must never write to the right-hand column — that's
 what makes a refresh safe to re-run. The corollary bites when there is more than one
-live copy of the cache (there is: this machine's, and `pothen_eshes`'s deployed volume):
+live copy of the cache (there is: this machine's, and `pothen_eshes`'s deployed one, whose
+Fly volume has been frozen since 2026-11-28 and is moving to a Contabo VPS, #42):
 the left-hand column never needs reconciling because a refresh rebuilds it, and the
 right-hand column can only be reconciled by copying rows across. `--merge-learned`
 (`merge.py`) is that operation — learned tables only, idempotent, `created_at`
