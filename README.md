@@ -291,8 +291,11 @@ Copies locally-learned rows (`instrument_aliases`, `lei_blacklist`,
 `title_isin_exclusions`), and the tombstones recording deletions from
 them, from a snapshot into a cache. Exists because
 there is more than one live copy of this database — this machine's, and
-`pothen_eshes`'s deployed volume — and only these three tables can drift
-in a way no refresh can repair.
+`pothen_eshes`'s deployed one — and only these three tables can drift
+in a way no refresh can repair. (The deployed copy's Fly volume has been
+frozen since 2026-11-28, while `pothen_eshes` moves to a Contabo VPS
+(#42). A content comparison that day found local equal or ahead on every
+learned table, so the VPS copy is seeded from local.)
 
 `export_snapshot()`/`import_snapshot()` already move a *whole* database,
 which is the wrong tool for reconciling two live copies: importing to

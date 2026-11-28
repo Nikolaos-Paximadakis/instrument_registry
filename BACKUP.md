@@ -56,6 +56,14 @@ database mid-write can capture a torn, unopenable snapshot.
 
 ## Warning: a shared deployed cache can be ahead of this one
 
+> **Fly is deprecated (2026-11-28).** `pothen_eshes`'s Fly machine is
+> stopped with auto-start off, so its volume can no longer be written. Its
+> final copy, compared against local by content that day, held nothing local
+> lacked. A copy is kept under
+> `~/data/backup/pothen_eshes_fly_final/2026-11-28T13-27Z/`. The paths
+> below (`/data/registry-data/...`) describe that Fly layout. The Contabo VPS
+> that replaces it (#42) will use its own persistent paths.
+
 If `pothen_eshes` (or any other consumer) is running against this same
 cache from a deployed environment — e.g. a route calling `add_alias()`/
 `exclude_title_match()` live — that copy is the **authoritative** one for
